@@ -12,8 +12,10 @@ from sqlalchemy.orm import selectinload
 
 from app.core.enums import RoleName, SourceStatus
 from app.core.utils import escape_like
+
 from app.sources.exceptions import *
 from app.sources.models import Source
+
 from app.users.models import Role, User, UserRole, UserSourceAccess
 
 SYSTEM_ROLE_NAMES: frozenset[str] = frozenset({
