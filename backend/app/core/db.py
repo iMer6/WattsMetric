@@ -12,8 +12,8 @@ from app.core.config import settings
 
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL.get_secret_value()
-        if hasattr(settings.DATABASE_URL, "get_secret_value")
-        else settings.DATABASE_URL,
+    if hasattr(settings.DATABASE_URL, "get_secret_value")
+    else settings.DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
     
@@ -33,8 +33,10 @@ async_session_maker: async_sessionmaker[AsyncSession] = async_sessionmaker(
     class_=AsyncSession,
 )
 
+
 class Base(DeclarativeBase):
     pass
+
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """

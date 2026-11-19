@@ -13,14 +13,22 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 
 from app.core.config import settings
+# from app.core.responses import COMMON_RESPONSES
 
 from app.services.health import check_database_connection
+
+# from app.users.router import router as users_router
+# from app.sources.router import router as sources_router
+# from app.iot.router import router as iot_router
+# from app.telemetry.router import router as telemetry_router
+# from app.maintenance.router import router as maintenance_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
     format="%(levelname)s %(name)s: %(message)s",
 )
 logger: Logger = logging.getLogger("watts_metric.main")
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -54,6 +62,38 @@ app.add_middleware(
     max_age=86400,
 )
 
+# app.include_router(
+#     users_router,
+#     prefix="/api/v1/users",
+#     tags=["Users & Auth"],
+#     responses=COMMON_RESPONSES,
+# )
+# app.include_router(
+#     sources_router,
+#     prefix="/api/v1/sources",
+#     tags=["Sources"],
+#     responses=COMMON_RESPONSES,
+# )
+# app.include_router(
+#     iot_router,
+#     prefix="/api/v1/iot",
+#     tags=["IoT Devices"],
+#     responses=COMMON_RESPONSES,
+# )
+# app.include_router(
+#     telemetry_router,
+#     prefix="/api/v1/telemetry",
+#     tags=["Telemetry & Measurement"],
+#     responses=COMMON_RESPONSES,
+# )
+# app.include_router(
+#     maintenance_router,
+#     prefix="/api/v1/maintenance",
+#     tags=["Maintenance"],
+#     responses=COMMON_RESPONSES,
+# )
+
+
 @app.get("/", tags=["Root"])
 def root() -> dict[str, Any]:
     env: str = settings.ENVIRONMENT
@@ -71,6 +111,7 @@ def root() -> dict[str, Any]:
             "health": "/health",
         }
     }
+
 
 @app.get(
     "/api/v1/health",
@@ -105,6 +146,7 @@ async def health() -> dict | JSONResponse:
         "status": "ok" if database_ok else "unhealthy",
         "database": database_ok,
     }
+
 
 @app.get("/health")
 async def health_check():

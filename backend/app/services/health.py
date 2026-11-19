@@ -8,6 +8,7 @@ from app.core.db import async_session_maker
 
 logger: Logger = logging.getLogger("watts_metric.health")
 
+
 async def check_database_connection() -> bool:
     try:
         async with async_session_maker() as session:

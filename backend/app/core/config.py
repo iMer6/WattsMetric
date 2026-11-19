@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # backend
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = "WattsMetric"
     
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "production"
     VERSION: str = "0.0.1"
     DEBUG: bool = False
-    ALGORITHM: str = "HS256" # for generating and verifying JWT tokens
+    ALGORITHM: str = "HS256"  # for generating and verifying JWT tokens
     
     # DB (Postgres + asyncpg)
     DB_NAME: str = "watts_metric"
@@ -84,7 +85,8 @@ class Settings(BaseSettings):
                 "SEED_DEFAULT_USERS cannot be True in production (DEBUG=False)"
             )
         
-        if ("localhost" in self.CORS_ORIGINS
+        if (
+            "localhost" in self.CORS_ORIGINS
             or "127.0.0.1" in self.CORS_ORIGINS
         ):
             raise ValueError(
@@ -114,5 +116,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
 
 settings: Settings = Settings()
