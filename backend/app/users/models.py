@@ -45,7 +45,6 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        repr=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -101,6 +100,9 @@ class User(Base):
             unique=True,
         ),
     )
+    
+    def __repr__(self) -> str:
+        return f"<User(user_id={self.user_id!r}, user_email={self.user_email!r})>"
 
 
 class Role(Base):
