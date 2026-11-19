@@ -41,3 +41,10 @@ class Permission(str, Enum):
     CREATE_USERS = "users:create"
     MANAGE_USERS = "users:manage"
     MANAGE_ROLES = "roles:manage"
+
+
+class SourceStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    MAINTENANCE = "maintenance"
+    OFFLINE = "offline"
