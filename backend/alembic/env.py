@@ -19,6 +19,10 @@ from app.core.config import settings
 from app.core.db import Base
 
 from app.users.models import *
+from app.sources.models import *
+from app.iot.models import *
+from app.telemetry.models import *
+from app.maintenance.models import *
 
 config: Config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
