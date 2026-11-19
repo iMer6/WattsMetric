@@ -1,5 +1,8 @@
 from pathlib import Path
-from pydantic import SecretStr, model_validator
+from typing import Literal
+from urllib.parse import quote_plus
+
+from pydantic import SecretStr, model_validator, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend
@@ -11,20 +14,21 @@ class Settings(BaseSettings):
     
     SECRET_KEY: SecretStr = SecretStr("")
     
-    ENVIRONMENT: str = "production"
+    ENVIRONMENT: Literal["development", "staging", "production"] = "production"
     VERSION: str = "0.0.1"
     DEBUG: bool = False
-    ALGORITHM: str = "HS256"  # for generating and verifying JWT tokens
     
     # DB (Postgres + asyncpg)
     DB_NAME: str = "watts_metric"
     DB_USER: str = "postgres"
     DB_PASSWORD: SecretStr = SecretStr("")
     DB_HOST: str = "localhost"
-    DB_PORT: str = "5432"
+    DB_PORT: int = 5432
     
     # Authorization & Cookies
     
+    JWT_SECRET_KEY: SecretStr = SecretStr("")
+    JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     REFRESH_COOKIE_NAME: str = "iot_refresh_token"
@@ -37,7 +41,7 @@ class Settings(BaseSettings):
         return not self.DEBUG
     
     # noinspection SpellCheckingInspection
-    COOKIE_SAMESITE: str = "lax"
+    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
     
     # Security & Rate Limiting
@@ -63,8 +67,17 @@ class Settings(BaseSettings):
     ENGINEER_EMAIL: str = "engineer@watts-metric.com"
     ENGINEER_PASSWORD: SecretStr = SecretStr("")
     
-    DISPATCHER_EMAIl: str = "dispatcher@watts-metric.com"
+    DISPATCHER_EMAIL: str = "dispatcher@watts-metric.com"
     DISPATCHER_PASSWORD: SecretStr = SecretStr("")
+    
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def check_jwt_secret_key_length(cls, v: SecretStr) -> SecretStr:
+        if len(v.get_secret_value().strip()) < 32:
+            raise ValueError(
+                "JWT_SECRET_KEY must be at least 32 characters long"
+            )
+        return v
     
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
@@ -75,10 +88,23 @@ class Settings(BaseSettings):
         if self.DEBUG:
             return self
         
-        if not self.SECRET_KEY.get_secret_value():
-            raise ValueError("SECRET_KEY is required in production (DEBUG=False)")
+        secret_value: str = self.SECRET_KEY.get_secret_value()
+        jwt_secret_value: str = self.JWT_SECRET_KEY.get_secret_value()
+        
+        if not secret_value:
+            raise ValueError(
+                "SECRET_KEY is required in production (DEBUG=False)"
+            )
+        
+        if secret_value == jwt_secret_value:
+            raise ValueError(
+                "SECRET_KEY and JWT_SECRET_KEY must not be identical"
+            )
+        
         if not self.DB_PASSWORD.get_secret_value():
-            raise ValueError("DB_PASSWORD is required in production (DEBUG=False)")
+            raise ValueError(
+                "DB_PASSWORD is required in production (DEBUG=False)"
+            )
         
         if self.SEED_DEFAULT_USERS:
             raise ValueError(
@@ -97,9 +123,10 @@ class Settings(BaseSettings):
     
     @property
     def DATABASE_URL(self) -> str:
+        password: str = quote_plus(self.DB_PASSWORD.get_secret_value())
         return (
             f"postgresql+asyncpg://"
-            f"{self.DB_USER}:{self.DB_PASSWORD.get_secret_value()}"
+            f"{self.DB_USER}:{password}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
     

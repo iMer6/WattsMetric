@@ -1,4 +1,3 @@
-import os
 import secrets
 
 from datetime import datetime, timedelta, timezone
@@ -9,14 +8,12 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 
+from app.core.config import settings
+
 _pwd_context: CryptContext = CryptContext(
     schemes=["bcrypt"], deprecated="auto"
 )
 _DUMMY_PASSWORD_HASH: str = _pwd_context.hash(secrets.token_urlsafe(32))
-
-JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
-JWT_ALGORITHM: str = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
 
 def hash_password(plain_password: str) -> str:
@@ -45,9 +42,10 @@ def create_oauth2_access_token(
     """
     now: datetime = datetime.now(timezone.utc)
     delta: timedelta = (
-        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta
+        or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    expire: datetime | timedelta = now + delta
+    expire: datetime = now + delta
     
     payload: dict[str, Any] = {
         "sub": str(client_id),
@@ -58,8 +56,8 @@ def create_oauth2_access_token(
     }
     return jwt.encode(
         payload,
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM,
+        settings.JWT_SECRET_KEY.get_secret_value(),
+        algorithm=settings.JWT_ALGORITHM,
     )
 
 
@@ -70,8 +68,8 @@ def decode_oauth2_access_token(token: str) -> dict[str, Any]:
     """
     payload = jwt.decode(
         token,
-        JWT_SECRET_KEY,
-        algorithms=[JWT_ALGORITHM],
+        settings.JWT_SECRET_KEY.get_secret_value(),
+        algorithms=[settings.JWT_ALGORITHM],
     )
     
     is_valid_payload: bool = (
