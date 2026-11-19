@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+
 class BaseError(Exception):
     """Base exception for all business logic."""
     status_code: int = status.HTTP_400_BAD_REQUEST
@@ -10,31 +11,37 @@ class BaseError(Exception):
         self.message = message or self.default_message
         super().__init__(self.message)
 
+
 class NotFoundError(BaseError):
     status_code: int = status.HTTP_404_NOT_FOUND
     default_message: str = "Resource not found"
+
 
 class ConflictError(BaseError):
     status_code: int = status.HTTP_409_CONFLICT
     default_message: str = "Resource conflict"
 
+
 class InsufficientPermissionError(BaseError):
     status_code: int = status.HTTP_403_FORBIDDEN
     default_message: str = "Permission denied"
+
 
 class BusinessRuleError(BaseError):
     status_code: int = status.HTTP_422_UNPROCESSABLE_CONTENT
     default_message: str = "Business rule violation"
 
+
 class InternalServerError(BaseError):
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     default_message: str = "Internal operation failed"
+
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Registers a single handler for all domain errors."""
     @app.exception_handler(BaseError)
     async def app_exception_handler(
-        request: Request, exc: BaseError
+        _request: Request, exc: BaseError
     ) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,

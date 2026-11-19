@@ -12,7 +12,6 @@ ALL_ROLES: frozenset[RoleName] = frozenset(role for role in RoleName)
 GLOBAL_ROLES: frozenset[RoleName] = frozenset({
     RoleName.ROOT,
     RoleName.ADMIN,
-    RoleName.GUEST,
 })
 
 # Management roles: full access to directories and users
@@ -35,13 +34,13 @@ USER_MANAGE_ROLES: frozenset[RoleName] = ADMIN_ROLES
 SOURCE_READ_ROLES: frozenset[RoleName] = ADMIN_ROLES | SOURCE_ROLES
 
 # Energy sources creating, editing and status management
-SOURCE_WRITE_ROLES: frozenset[RoleName] = ADMIN_ROLES | { RoleName.OWNER }
+SOURCE_WRITE_ROLES: frozenset[RoleName] = ADMIN_ROLES | {RoleName.OWNER}
 
 # Deactivating or archiving an energy source
-SOURCE_DELETE_ROLES: frozenset[RoleName] = ADMIN_ROLES | { RoleName.OWNER }
+SOURCE_DELETE_ROLES: frozenset[RoleName] = ADMIN_ROLES | {RoleName.OWNER}
 
 # Managing user_source_access (granting/revoking access to a specific source)
-SOURCE_ACCESS_MANAGE_ROLES: frozenset[RoleName] = ADMIN_ROLES | { RoleName.OWNER }
+SOURCE_ACCESS_MANAGE_ROLES: frozenset[RoleName] = ADMIN_ROLES | {RoleName.OWNER}
 
 # Viewing IoT device status, firmware version and sensor config
 IOT_DEVICE_READ_ROLES: frozenset[RoleName] = ADMIN_ROLES | SOURCE_ROLES
@@ -56,7 +55,7 @@ IOT_DEVICE_MANAGE_ROLES: frozenset[RoleName] = frozenset({
 MAINTENANCE_READ_ROLES: frozenset[RoleName] = ADMIN_ROLES | SOURCE_ROLES
 
 # Creating and syncing field maintenance sessions & photos
-MAINTENANCE_WRITE_ROLES: frozenset[RoleName] = frozenset({ RoleName.ENGINEER })
+MAINTENANCE_WRITE_ROLES: frozenset[RoleName] = frozenset({RoleName.ENGINEER})
 
 # Configuring generation anomaly alert rules and thresholds
 ALERT_RULES_MANAGE_ROLES: frozenset[RoleName] = ADMIN_ROLES | {
@@ -75,6 +74,7 @@ TEST_PROFILE_MANAGE_ROLES: frozenset[RoleName] = ADMIN_ROLES | {
     RoleName.OWNER,
     RoleName.DISPATCHER
 }
+
 
 def permissions_for(role_name: RoleName | str) -> dict[str, bool]:
     """
@@ -114,6 +114,7 @@ def permissions_for(role_name: RoleName | str) -> dict[str, bool]:
         "llm_analyse": role_enum in LLM_ANALYSE_ROLES,
         "test_profiles_manage": role_enum in TEST_PROFILE_MANAGE_ROLES,
     }
+
 
 def merged_permissions_for(roles: list[RoleName | str]) -> dict[str, bool]:
     """
