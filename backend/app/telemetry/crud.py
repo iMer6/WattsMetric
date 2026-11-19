@@ -437,7 +437,7 @@ async def get_time_aggregates_by_source(
     """
     Summary time analytics across an entire generation facility (total energy and average
     parameters across all active station nodes grouped by time buckets) for building
-    charts and comparing periods (MF-7).
+    charts and comparing periods.
     """
     _validate_time_range(start_time, end_time)
 
