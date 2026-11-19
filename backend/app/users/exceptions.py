@@ -7,29 +7,6 @@ from app.core.exceptions import (
 )
 
 
-# 404 Not found
-
-
-class UserNotFoundError(NotFoundError):
-    default_message = "The user does not exist."
-
-
-class RoleNotFoundError(NotFoundError):
-    default_message = "The specified role does not exist."
-
-
-class SourceNotFoundError(NotFoundError):
-    default_message = "The specified energy source does not exist."
-
-
-class UserSourceAccessNotFoundError(NotFoundError):
-    default_message = "User access record for this source does not exist."
-
-
-class MaintenanceSessionNotFoundError(NotFoundError):
-    default_message = "Maintenance session record for this session does not exist."
-
-
 # 403 Forbidden
 
 
@@ -59,6 +36,29 @@ class UserDeactivatedError(InsufficientPermissionError):
 
 class InspectorHasNoSourceAccessError(InsufficientPermissionError):
     default_message = "Inspector has no source access record."
+
+
+# 404 Not found
+
+
+class UserNotFoundError(NotFoundError):
+    default_message = "The user does not exist."
+
+
+class RoleNotFoundError(NotFoundError):
+    default_message = "The specified role does not exist."
+
+
+class SourceNotFoundError(NotFoundError):
+    default_message = "The specified energy source does not exist."
+
+
+class UserSourceAccessNotFoundError(NotFoundError):
+    default_message = "User access record for this source does not exist."
+
+
+class MaintenanceSessionNotFoundError(NotFoundError):
+    default_message = "Maintenance session record for this session does not exist."
 
 
 # 409 Conflict
