@@ -5,33 +5,34 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
-    table, Table, TableClause,
     and_,
-    column,
     func,
     select, exists, delete,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.db import Base
-from app.users.exceptions import *
-from app.users.models import User, Role, UserRole, UserSourceAccess
-from app.core.enums import RoleName
-
 from jwt.exceptions import InvalidTokenError
+
+from app.core.config import settings
+from app.core.enums import RoleName
 from app.core.security import (
     hash_password,
     verify_password,
     verify_dummy_password,
     create_oauth2_access_token,
     decode_oauth2_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from app.core.utils import normalise_email, escape_like
+
+from app.users.exceptions import *
+from app.users.models import User, Role, UserRole, UserSourceAccess
+
+from app.sources.models import Source
+from app.maintenance.models import MaintenanceSession, MaintenanceInspector
+
 
 SYSTEM_ROLE_NAMES: frozenset[str] = frozenset({
     RoleName.ROOT.value,
@@ -41,72 +42,6 @@ SYSTEM_ROLE_NAMES: frozenset[str] = frozenset({
 SOURCE_STATUS_ACTIVE: str = "active"
 
 
-def _get_sources_table() -> Table | TableClause:
-    """
-    Returns the metadata for the 'sources' table
-    without circular imports between modules.
-    """
-    if "sources" in Base.metadata.tables:
-        return Base.metadata.tables["sources"]
-    
-    return table(
-        "sources",
-        column("source_id", PG_UUID(as_uuid=True)),
-        column("source_status"),
-    )
-
-
-def _get_maintenance_sessions_table() -> Table | TableClause:
-    """
-    Returns the metadata for the 'maintenance_sessions' table
-    without circular imports between modules.
-    """
-    if "maintenance_sessions" in Base.metadata.tables:
-        return Base.metadata.tables["maintenance_sessions"]
-    
-    return table(
-        "maintenance_sessions",
-        column("session_id", PG_UUID(as_uuid=True)),
-        column("source_id", PG_UUID(as_uuid=True)),
-    )
-
-
-def _get_maintenance_inspectors_table() -> Table | TableClause:
-    """
-    Returns the metadata for the 'maintenance_inspectors' table
-    without circular imports between modules.
-    """
-    if "maintenance_inspectors" in Base.metadata.tables:
-        return Base.metadata.tables["maintenance_inspectors"]
-    
-    return table(
-        "maintenance_inspectors",
-        column("session_id", PG_UUID(as_uuid=True)),
-        column("inspector_id", PG_UUID(as_uuid=True)),
-    )
-
-
-async def _get_maintenance_session_source_id(
-    db: AsyncSession,
-    session_id: UUID,
-) -> UUID:
-    """
-    Checks for the existence of a service session
-    and returns its source_id.
-    """
-    sessions: Table | TableClause = _get_maintenance_sessions_table()
-    source_id_stmt = (
-        select(sessions.columns.source_id)
-        .where(session_id == sessions.columns.session_id)
-    )
-    source_id: UUID | None = await db.scalar(source_id_stmt)
-    if source_id is None:
-        raise MaintenanceSessionNotFoundError(
-            f"Maintenance session {session_id} not found"
-        )
-    return source_id
-
-
 # Integrity and access right checks
 
 
@@ -114,10 +49,8 @@ async def _ensure_source_exists(
     db: AsyncSession,
     source_id: UUID
 ) -> None:
-    sources: Table | TableClause = _get_sources_table()
-    
     source_exists_stmt = select(
-        exists().where(source_id == sources.columns.source_id)
+        exists().where(Source.source_id == source_id)
     )
     source_exists: bool | None = await db.scalar(source_exists_stmt)
     if not source_exists:
@@ -359,8 +292,6 @@ async def _ensure_not_sole_owner_of_active_sources(
     Verifies that each of the user's active sources will still have
     at least one other active OWNER.
     """
-    sources: Table | TableClause = _get_sources_table()
-    
     owner_role_id_stmt = (
         select(Role.role_id)
         .where(Role.role_name == RoleName.OWNER.value)
@@ -372,14 +303,14 @@ async def _ensure_not_sole_owner_of_active_sources(
     active_owned_stmt = (
         select(UserSourceAccess.source_id)
         .join(
-            sources,
-            UserSourceAccess.source_id == sources.columns.source_id
+            Source,
+            UserSourceAccess.source_id == Source.source_id
         )
         .where(
             and_(
                 UserSourceAccess.user_id == user_id,
                 UserSourceAccess.role_id == owner_role_id,
-                sources.columns.source_status == SOURCE_STATUS_ACTIVE,
+                Source.source_status == SOURCE_STATUS_ACTIVE,
             )
         )
         .with_for_update(of=UserSourceAccess)
@@ -584,7 +515,7 @@ async def authenticate_user_oauth2(
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
 
 
@@ -1239,7 +1170,16 @@ async def assign_inspector_to_maintenance_session(
     the inspector's activity status and role,
     as well as their access to the energy source for that session.
     """
-    source_id: UUID = await _get_maintenance_session_source_id(db, session_id)
+    source_id_stmt = (
+        select(MaintenanceSession.source_id)
+        .where(MaintenanceSession.session_id == session_id)
+    )
+    source_id: UUID | None = await db.scalar(source_id_stmt)
+    if source_id is None:
+        raise MaintenanceSessionNotFoundError(
+            f"Maintenance session {session_id} not found"
+        )
+        
     inspector: User = await validate_user_for_assignment(
         db, user_id=inspector_id, required_inspector=True
     )
@@ -1266,11 +1206,8 @@ async def assign_inspector_to_maintenance_session(
                 f"to source {source_id}"
             )
     
-    inspectors_table: Table | TableClause = (
-        _get_maintenance_inspectors_table()
-    )
     insert_inspector_stmt = (
-        pg_insert(inspectors_table)
+        pg_insert(MaintenanceInspector)
         .values(session_id=session_id, inspector_id=inspector_id)
         .on_conflict_do_nothing(
             index_elements=["session_id", "inspector_id"]
