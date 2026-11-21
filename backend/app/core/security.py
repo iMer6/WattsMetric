@@ -4,31 +4,53 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+import bcrypt
 import jwt
 from jwt.exceptions import InvalidTokenError
-from passlib.context import CryptContext
 
 from app.core.config import settings
 
-_pwd_context: CryptContext = CryptContext(
-    schemes=["bcrypt"], deprecated="auto"
-)
-_DUMMY_PASSWORD_HASH: str = _pwd_context.hash(secrets.token_urlsafe(32))
+_BCRYPT_ROUNDS: int = 12
+_MAX_BCRYPT_BYTES: int = 72
+
+
+def _is_password_length_valid(password_bytes: bytes) -> bool:
+    return len(password_bytes) <= _MAX_BCRYPT_BYTES
 
 
 def hash_password(plain_password: str) -> str:
-    return _pwd_context.hash(plain_password)
+    password_bytes: bytes = plain_password.encode("utf-8")
+    
+    if not _is_password_length_valid(password_bytes):
+        raise ValueError("Password cannot exceed 72 bytes")
+    
+    salt: bytes = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+    return bcrypt.hashpw(password_bytes, salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return _pwd_context.verify(plain_password, hashed_password)
+    password_bytes: bytes = plain_password.encode("utf-8")
+    
+    if not _is_password_length_valid(password_bytes):
+        return False
+    
+    try:
+        return bcrypt.checkpw(
+            password_bytes,
+            hashed_password.encode("utf-8"),
+        )
+    except ValueError:
+        return False
+    
+
+_DUMMY_PASSWORD_HASH: str = hash_password(secrets.token_urlsafe(32))
 
 
 def verify_dummy_password(plain_password: str) -> bool:
     """
     Dummy hash check to protect against timing attacks.
     """
-    return _pwd_context.verify(plain_password, _DUMMY_PASSWORD_HASH)
+    return verify_password(plain_password, _DUMMY_PASSWORD_HASH)
 
 
 def create_oauth2_access_token(
@@ -70,6 +92,9 @@ def decode_oauth2_access_token(token: str) -> dict[str, Any]:
         token,
         settings.JWT_SECRET_KEY.get_secret_value(),
         algorithms=[settings.JWT_ALGORITHM],
+        options={
+            "require": ["exp", "iat", "sub"],
+        },
     )
     
     is_valid_payload: bool = (
