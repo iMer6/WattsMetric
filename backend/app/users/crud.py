@@ -342,6 +342,39 @@ async def _ensure_not_sole_owner_of_active_sources(
             )
 
 
+async def ensure_can_view_source_accesses(
+    db: AsyncSession,
+    *,
+    actor_id: UUID,
+    source_id: UUID
+) -> None:
+    """
+    Verifies that the source exists and the actor is either system staff
+    (ROOT/ADMIN) or has an access record for this energy source.
+    """
+    await _ensure_source_exists(db, source_id)
+    
+    has_system_role: bool = await _user_has_system_role(db, actor_id)
+    if has_system_role:
+        return
+    
+    has_access_stmt = select(
+        exists().where(
+            and_(
+                UserSourceAccess.user_id == actor_id,
+                UserSourceAccess.source_id == source_id,
+            )
+        )
+    )
+    has_access: bool | None = await db.scalar(has_access_stmt)
+    
+    if not has_access:
+        raise InsufficientRolePermissionError(
+            f"User {actor_id} does not have access to view permissions "
+            f"for source {source_id}"
+        )
+
+
 # Read (Users & Roles)
 
 
@@ -1162,13 +1195,14 @@ async def revoke_user_source_access(
 async def assign_inspector_to_maintenance_session(
     db: AsyncSession,
     *,
+    actor_id: UUID,
     session_id: UUID,
     inspector_id: UUID,
 ) -> None:
     """
-    Verifies the existence of a service session,
-    the inspector's activity status and role,
-    as well as their access to the energy source for that session.
+    Verifies the existence of a service session, actor permission
+    (system admin/ROOT or source owner), the inspector's activity status
+    and role, as well as their access to the energy source for that session.
     """
     source_id_stmt = (
         select(MaintenanceSession.source_id)
@@ -1179,7 +1213,11 @@ async def assign_inspector_to_maintenance_session(
         raise MaintenanceSessionNotFoundError(
             f"Maintenance session {session_id} not found"
         )
-        
+    
+    await _ensure_source_owner_or_admin(
+        db, actor_id=actor_id, source_id=source_id,
+    )
+    
     inspector: User = await validate_user_for_assignment(
         db, user_id=inspector_id, required_inspector=True
     )
