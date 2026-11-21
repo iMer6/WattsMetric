@@ -1,5 +1,10 @@
+import logging
+from logging import Logger
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+
+logger: Logger = logging.getLogger("watts_metric.exceptions")
 
 
 class BaseError(Exception):
@@ -41,9 +46,26 @@ def register_exception_handlers(app: FastAPI) -> None:
     """Registers a single handler for all domain errors."""
     @app.exception_handler(BaseError)
     async def app_exception_handler(
-        _request: Request, exc: BaseError
+        _request: Request,
+        exc: BaseError
     ) -> JSONResponse:
+        is_internal_server_error: bool = (
+            exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        if is_internal_server_error:
+            logger.exception(
+                "Unhandled internal domain error: %s", exc
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "detail": "Internal server error",
+                },
+            )
+        
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.message},
+            content={
+                "detail": exc.message,
+            },
         )

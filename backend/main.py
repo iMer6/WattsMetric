@@ -12,12 +12,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 
+from sqlalchemy.orm import configure_mappers
+import app.core.models  # noqa: F401
+
 from app.core.config import settings
-# from app.core.responses import COMMON_RESPONSES
+from app.core.exceptions import register_exception_handlers
+from app.core.responses import COMMON_RESPONSES
 
 from app.services.health import check_database_connection
 
-# from app.users.router import router as users_router
+from app.users.router import router as users_router
 # from app.sources.router import router as sources_router
 # from app.iot.router import router as iot_router
 # from app.telemetry.router import router as telemetry_router
@@ -35,6 +39,7 @@ async def lifespan(_app: FastAPI):
     """
     Application lifecycle: initialization at startup
     """
+    configure_mappers()
     logger.info("Running the WattsMetric Backend API")
     yield
     logger.info("Stopping WattsMetric Backend API")
@@ -55,19 +60,22 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=[
-        "Authorization",
-        "Content-Type",
+        "Authorization", "Content-Type",
     ],
-    expose_headers=["Content-Disposition", "X-Total-Count"],
+    expose_headers=[
+        "Content-Disposition", "X-Total-Count"
+    ],
     max_age=86400,
 )
 
-# app.include_router(
-#     users_router,
-#     prefix="/api/v1/users",
-#     tags=["Users & Auth"],
-#     responses=COMMON_RESPONSES,
-# )
+register_exception_handlers(app)
+
+app.include_router(
+    users_router,
+    prefix="/api/v1/users",
+    tags=["Users & Auth"],
+    responses=COMMON_RESPONSES,
+)
 # app.include_router(
 #     sources_router,
 #     prefix="/api/v1/sources",
