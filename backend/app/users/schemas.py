@@ -1,7 +1,5 @@
-from __future__ import annotations
-
-import re
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import (
@@ -9,26 +7,18 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
-    field_validator,
+    AfterValidator,
 )
 
 from app.core.enums import RoleName
-
-_PASSWORD_PATTERN: re.Pattern[str] = re.compile(
-    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$"
-)
+from app.core.utils import validate_strong_password
 
 
-def _validate_strong_password(value: str) -> str:
-    is_valid_length: bool = len(value.encode("utf-8")) <= 72
-    if not is_valid_length:
-        raise ValueError("Password must not exceed 72 bytes (bcrypt limit).")
-    if not _PASSWORD_PATTERN.match(value):
-        raise ValueError(
-            "Password must contain at least one uppercase letter, "
-            "one lowercase letter, and one digit."
-        )
-    return value
+StrongPassword: type[str] = Annotated[
+    str,
+    Field(..., min_length=8, max_length=72),
+    AfterValidator(validate_strong_password),
+]
 
 
 # Auth & Tokens
@@ -70,28 +60,18 @@ class UserRegisterRequest(UserBase):
     Public registration of a station owner.
     The OWNER role is assigned automatically.
     """
-    password: str = Field(..., min_length=8, max_length=72)
-
-    @field_validator("password")
-    @classmethod
-    def check_password_strength(cls, v: str) -> str:
-        return _validate_strong_password(v)
+    password: str = StrongPassword
 
 
 class UserAdminCreateRequest(UserBase):
     """
     Creation of a user by an admin/ROOT with the selection of initial roles.
     """
-    password: str = Field(..., min_length=8, max_length=72)
+    password: str = StrongPassword
     initial_role_names: list[RoleName] = Field(
         default=[RoleName.OWNER],
         min_length=1,
     )
-
-    @field_validator("password")
-    @classmethod
-    def check_password_strength(cls, v: str) -> str:
-        return _validate_strong_password(v)
 
 
 class UserUpdateRequest(BaseModel):
@@ -105,12 +85,7 @@ class UserUpdateRequest(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=72)
-    new_password: str = Field(..., min_length=8, max_length=72)
-
-    @field_validator("new_password")
-    @classmethod
-    def check_new_password_strength(cls, v: str) -> str:
-        return _validate_strong_password(v)
+    new_password: str = StrongPassword
 
 
 class UserShortOut(BaseModel):

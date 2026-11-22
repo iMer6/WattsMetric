@@ -118,13 +118,13 @@ class SourceCreateRequest(BaseModel):
 
     @field_validator("latitude")
     @classmethod
-    def check_latitude(cls, latitude: Decimal | None) -> Decimal | None:
-        return _validate_lat(latitude)
+    def check_latitude(cls, v: Decimal | None) -> Decimal | None:
+        return _validate_lat(v)
 
     @field_validator("longitude")
     @classmethod
-    def check_longitude(cls, longitude: Decimal | None) -> Decimal | None:
-        return _validate_lon(longitude)
+    def check_longitude(cls, v: Decimal | None) -> Decimal | None:
+        return _validate_lon(v)
 
 
 class SourceUpdateRequest(BaseModel):
@@ -169,13 +169,13 @@ class SourceUpdateRequest(BaseModel):
 
     @field_validator("latitude")
     @classmethod
-    def check_latitude(cls, latitude: Decimal | None) -> Decimal | None:
-        return _validate_lat(latitude)
+    def check_latitude(cls, v: Decimal | None) -> Decimal | None:
+        return _validate_lat(v)
 
     @field_validator("longitude")
     @classmethod
-    def check_longitude(cls, longitude: Decimal | None) -> Decimal | None:
-        return _validate_lon(longitude)
+    def check_longitude(cls, v: Decimal | None) -> Decimal | None:
+        return _validate_lon(v)
 
 
 class SourceShortOut(BaseModel):

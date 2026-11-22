@@ -1,5 +1,23 @@
 import re
 
+
+PASSWORD_PATTERN: re.Pattern[str] = re.compile(
+    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$"
+)
+
+
+def validate_strong_password(value: str) -> str:
+    is_valid_length: bool = len(value.encode("utf-8")) <= 72
+    if not is_valid_length:
+        raise ValueError("Password must not exceed 72 bytes (bcrypt limit).")
+    if not PASSWORD_PATTERN.match(value):
+        raise ValueError(
+            "Password must contain at least one uppercase letter, "
+            "one lowercase letter, and one digit."
+        )
+    return value
+
+
 MAC_ADDRESS_PATTERN: re.Pattern[str] = re.compile(
     r"^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$|^[0-9a-fA-F]{12}$"
 )

@@ -1,13 +1,23 @@
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Any
+from typing import Any, Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, AfterValidator
 
 from app.core.utils import normalise_mac_address
-from app.iot.exceptions import InvalidMacAddressError
+
+
+MacAddress: type[str] = Annotated[
+    str,
+    Field(
+        ...,
+        min_length=12,
+        max_length=17,
+        description="Unique EUI-48 MAC address of the ESP32 microcontroller.",
+        examples=["24:6f:28:a1:b2:c3"],
+    ),
+    AfterValidator(normalise_mac_address),
+]
 
 
 class IoTDeviceBase(BaseModel):
@@ -37,29 +47,13 @@ class IoTDeviceBase(BaseModel):
 
 
 class IoTDeviceCreateRequest(IoTDeviceBase):
-    esp32_mac: str = Field(
-        ...,
-        min_length=12,
-        max_length=17,
-        description="Unique EUI-48 MAC address of the ESP32 microcontroller.",
-        examples=["24:6f:28:a1:b2:c3"],
-    )
+    esp32_mac: str = MacAddress
     is_active: bool = Field(
         default=True,
         description=(
             "Indicates whether the IoT node is active and allowed to stream telemetry."
         ),
     )
-
-    @field_validator("esp32_mac")
-    @classmethod
-    def validate_mac(cls, mac_address: str) -> str:
-        try:
-            validated_mac: str = normalise_mac_address(mac_address)
-        except ValueError as exc:
-            raise InvalidMacAddressError(str(exc)) from exc
-        
-        return validated_mac
 
 
 class IoTDeviceUpdateRequest(BaseModel):
