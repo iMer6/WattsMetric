@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from app.core.enums import Permission, SourceStatus
+from app.core.schemas import PaginatedResponse
 
 from app.sources import crud
 from app.sources.dependencies import (
@@ -15,7 +16,6 @@ from app.sources.dependencies import (
 )
 from app.sources.models import Source
 from app.sources.schemas import (
-    PaginatedResponse,
     SourceCreateRequest,
     SourceDetailOut,
     SourceShortOut,

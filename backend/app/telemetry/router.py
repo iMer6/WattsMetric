@@ -6,6 +6,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, Response, status
 
+from app.core.schemas import PaginatedResponse
+
 from app.telemetry import crud
 from app.telemetry.dependencies import (
     AnalyticsReadableSource,
@@ -18,7 +20,6 @@ from app.telemetry.schemas import (
     MeasurementBatchIngestRequest,
     MeasurementBatchIngestResponse,
     MeasurementOut,
-    PaginatedResponse,
     TestProfileCreateRequest,
     TestProfileDetailOut,
     TestProfileShortOut,

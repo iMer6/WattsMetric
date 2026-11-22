@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Generic, TypeVar, Annotated
+from typing import Any, TypeVar, Annotated
 from uuid import UUID
 
 from pydantic import (
@@ -27,28 +27,6 @@ type MeasuredAt = Annotated[
     ),
     AfterValidator(ensure_utc_datetime),
 ]
-
-
-class PaginatedResponse(BaseModel, Generic[T]):
-    """
-    Standard paginated response wrapper matching `X-Total-Count` header.
-    """
-
-    items: list[T] = Field(
-        ..., description="Page items."
-    )
-    total: int = Field(
-        ..., ge=0,
-        description="Total number of matching records."
-    )
-    skip: int = Field(
-        ..., ge=0,
-        description="Number of skipped records."
-    )
-    limit: int = Field(
-        ..., ge=1,
-        description="Maximum number of returned records."
-    )
 
 
 # Telemetry Measurements

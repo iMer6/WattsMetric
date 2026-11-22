@@ -15,6 +15,8 @@ from fastapi import (
     status
 )
 
+from app.core.schemas import PaginatedResponse
+
 from app.maintenance import crud
 from app.maintenance.dependencies import (
     MaintenanceReadableSource,
@@ -25,7 +27,6 @@ from app.maintenance.schemas import (
     MaintenancePhotoOut,
     MaintenanceSessionCreateRequest,
     MaintenanceSessionOut,
-    PaginatedResponse,
 )
 from app.users.dependencies import CurrentUser, DbSession
 
