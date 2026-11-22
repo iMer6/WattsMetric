@@ -1,7 +1,7 @@
 import re
 
 from datetime import datetime, timezone
-
+from decimal import Decimal
 
 PASSWORD_PATTERN: re.Pattern[str] = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$"
@@ -70,6 +70,36 @@ def escape_like(value: str) -> str:
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+
+
+MIN_LATITUDE: Decimal = Decimal("-90")
+MAX_LATITUDE: Decimal = Decimal("90")
+
+
+def validate_lat(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+
+    is_out_of_bounds: bool = value < MIN_LATITUDE or value > MAX_LATITUDE
+    if is_out_of_bounds:
+        raise ValueError("Latitude must be between -90 and 90 degrees.")
+
+    return value
+
+
+MIN_LONGITUDE: Decimal = Decimal("-180")
+MAX_LONGITUDE: Decimal = Decimal("180")
+
+
+def validate_lon(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+
+    is_out_of_bounds: bool = value < MIN_LONGITUDE or value > MAX_LONGITUDE
+    if is_out_of_bounds:
+        raise ValueError("Longitude must be between -180 and 180 degrees.")
+
+    return value
 
 
 def ensure_utc_datetime(value: datetime) -> datetime:

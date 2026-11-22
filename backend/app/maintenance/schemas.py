@@ -6,7 +6,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    AwareDatetime,
     AfterValidator
 )
 
@@ -17,8 +16,8 @@ from app.users.schemas import UserShortOut
 
 T: TypeVar = TypeVar("T")
 
-UtcDatetime: type[AwareDatetime] = Annotated[
-    AwareDatetime,
+UtcDatetime: type[datetime] = Annotated[
+    datetime,
     AfterValidator(ensure_utc_datetime),
 ]
 
@@ -96,7 +95,7 @@ class MaintenanceSessionCreateRequest(BaseModel):
             "Cleaned dust accumulation on string B; verified INA219 calibration via BLE."
         ],
     )
-    created_at: AwareDatetime | None = Field(
+    created_at: datetime | None = Field(
         default=None,
         description=(
             "UTC timestamp when the inspection was recorded offline on site. "

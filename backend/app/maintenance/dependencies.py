@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Annotated
 
 from fastapi import Depends
@@ -9,7 +7,7 @@ from app.core.permissions import MAINTENANCE_READ_ROLES, MAINTENANCE_WRITE_ROLES
 from app.sources.dependencies import require_source_access
 from app.sources.models import Source
 
-MaintenanceReadableSource: type[Source] = Annotated[
+type MaintenanceReadableSource = Annotated[
     Source,
     Depends(
         require_source_access(
@@ -20,7 +18,7 @@ MaintenanceReadableSource: type[Source] = Annotated[
     ),
 ]
 
-MaintenanceWritableSource: type[Source] = Annotated[
+type MaintenanceWritableSource = Annotated[
     Source,
     Depends(
         require_source_access(

@@ -122,10 +122,11 @@ async def get_current_active_user(
     return user
 
 
-CurrentUser: type[User] = Annotated[
+type CurrentUser = Annotated[
     User, Depends(get_current_active_user)
 ]
-DbSession: type[AsyncSession] = Annotated[
+
+type DbSession = Annotated[
     AsyncSession, Depends(get_async_session)
 ]
 

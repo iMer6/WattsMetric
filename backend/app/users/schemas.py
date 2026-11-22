@@ -14,9 +14,12 @@ from app.core.enums import RoleName
 from app.core.utils import validate_strong_password
 
 
-StrongPassword: type[str] = Annotated[
+type StrongPassword = Annotated[
     str,
-    Field(..., min_length=8, max_length=72),
+    Field(
+        min_length=8,
+        max_length=72
+    ),
     AfterValidator(validate_strong_password),
 ]
 
@@ -60,16 +63,16 @@ class UserRegisterRequest(UserBase):
     Public registration of a station owner.
     The OWNER role is assigned automatically.
     """
-    password: str = StrongPassword
+    password: StrongPassword
 
 
 class UserAdminCreateRequest(UserBase):
     """
     Creation of a user by an admin/ROOT with the selection of initial roles.
     """
-    password: str = StrongPassword
+    password: StrongPassword
     initial_role_names: list[RoleName] = Field(
-        default=[RoleName.OWNER],
+        default_factory=lambda: [RoleName.OWNER],
         min_length=1,
     )
 
@@ -85,7 +88,7 @@ class UserUpdateRequest(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=72)
-    new_password: str = StrongPassword
+    new_password: StrongPassword
 
 
 class UserShortOut(BaseModel):
@@ -99,7 +102,7 @@ class UserShortOut(BaseModel):
 
 class UserOut(UserShortOut):
     created_at: datetime
-    roles: list[RoleOut] = []
+    roles: list[RoleOut] = Field(default_factory=list)
 
 
 class UserSourceAccessBriefOut(BaseModel):
@@ -114,7 +117,7 @@ class UserSourceAccessBriefOut(BaseModel):
 
 
 class UserDetailOut(UserOut):
-    source_accesses: list[UserSourceAccessBriefOut] = []
+    source_accesses: list[UserSourceAccessBriefOut] = Field(default_factory=list)
 
 
 class PaginatedUsersResponse(BaseModel):

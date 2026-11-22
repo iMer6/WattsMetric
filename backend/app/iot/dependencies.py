@@ -54,7 +54,7 @@ def require_source_device_access(
     return _dependency
 
 
-DeviceManageableSource: type[Source] = Annotated[
+type DeviceManageableSource = Annotated[
     Source,
     Depends(
         require_source_access(
@@ -65,7 +65,7 @@ DeviceManageableSource: type[Source] = Annotated[
     ),
 ]
 
-ReadableSourceDevice: type[tuple[Source, IoTDevice]] = Annotated[
+type ReadableSourceDevice = Annotated[
     tuple[Source, IoTDevice],
     Depends(
         require_source_device_access(
@@ -75,7 +75,7 @@ ReadableSourceDevice: type[tuple[Source, IoTDevice]] = Annotated[
     ),
 ]
 
-ManageableSourceDevice: type[tuple[Source, IoTDevice]] = Annotated[
+type ManageableSourceDevice = Annotated[
     tuple[Source, IoTDevice],
     Depends(
         require_source_device_access(

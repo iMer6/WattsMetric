@@ -115,12 +115,12 @@ def require_source_access(
     return _dependency
 
 
-SourceCreatorUser: type[User] = Annotated[
+type SourceCreatorUser = Annotated[
     User,
     Depends(require_source_creator)
 ]
 
-ReadableSource: type[Source] = Annotated[
+type ReadableSource = Annotated[
     Source,
     Depends(
         require_source_access(
@@ -131,7 +131,7 @@ ReadableSource: type[Source] = Annotated[
     ),
 ]
 
-DetailedReadableSource: type[Source] = Annotated[
+type DetailedReadableSource = Annotated[
     Source,
     Depends(
         require_source_access(
@@ -142,7 +142,7 @@ DetailedReadableSource: type[Source] = Annotated[
     ),
 ]
 
-WritableSource: type[Source] = Annotated[
+type WritableSource = Annotated[
     Source,
     Depends(
         require_source_access(
@@ -153,7 +153,7 @@ WritableSource: type[Source] = Annotated[
     ),
 ]
 
-DeletableSource: type[Source] = Annotated[
+type DeletableSource = Annotated[
     Source,
     Depends(
         require_source_access(
