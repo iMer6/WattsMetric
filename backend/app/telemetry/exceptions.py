@@ -24,7 +24,7 @@ class TestProfileAlreadyExistsError(ConflictError):
 
 
 class InvalidTimeRangeError(BusinessRuleError):
-    default_message = "start_time must be earlier than or equal to end_time."
+    default_message = "'date_from' must be earlier than or equal to 'date_to'."
 
 
 class InvalidTelemetryPayloadError(BusinessRuleError):

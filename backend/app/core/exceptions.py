@@ -56,16 +56,13 @@ def register_exception_handlers(app: FastAPI) -> None:
             logger.exception(
                 "Unhandled internal domain error: %s", exc
             )
-            return JSONResponse(
-                status_code=exc.status_code,
-                content={
-                    "detail": "Internal server error",
-                },
-            )
+            detail: str = "Internal server error"
+        else:
+            detail: str = exc.message
         
         return JSONResponse(
             status_code=exc.status_code,
             content={
-                "detail": exc.message,
+                "detail": detail,
             },
         )
