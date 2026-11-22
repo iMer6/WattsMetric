@@ -11,7 +11,9 @@ from app.core.exceptions import (
 
 
 class SourceAccessDeniedError(InsufficientPermissionError):
-    default_message = "You do not have permission to access or modify this energy source."
+    default_message = (
+        "You do not have permission to access or modify this energy source."
+    )
 
 
 class SourceDeactivatedError(InsufficientPermissionError):

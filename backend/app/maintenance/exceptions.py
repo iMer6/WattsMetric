@@ -2,7 +2,7 @@ from app.core.exceptions import (
     BusinessRuleError,
     InsufficientPermissionError,
     InternalServerError,
-    NotFoundError,
+    NotFoundError, ConflictError,
 )
 
 
@@ -20,18 +20,57 @@ class InvalidInspectorAssignmentError(InsufficientPermissionError):
 
 
 class MaintenanceSessionNotFoundError(NotFoundError):
-    default_message = "Maintenance session record does not exist."
+    default_message = (
+        "The specified maintenance session does not exist "
+        "or does not belong to this source."
+    )
 
 
 class MaintenancePhotoNotFoundError(NotFoundError):
     default_message = "Maintenance photo record does not exist."
 
 
+class InspectorNotFoundError(NotFoundError):
+    default_message = (
+        "One or more specified service inspectors do not exist "
+        "or are inactive."
+    )
+
+
+# 409 Conflict
+
+
+class MaintenanceSessionConflictError(ConflictError):
+    default_message = (
+        "Maintenance session ID belongs to a different source "
+        "and cannot be overwritten."
+    )
+
+
+# 413 Payload too large
+
+
+class PhotoFileTooLargeError(BusinessRuleError):
+    status_code: int = 413
+    default_message = (
+        "Uploaded photo file exceeds the max allowed size."
+    )
+
+
 # 422 Unprocessable Entity
 
 
 class InvalidMaintenanceTimestampError(BusinessRuleError):
-    default_message = "Maintenance session and photo timestamps must be timezone-aware."
+    default_message = (
+        "Maintenance session and photo timestamps must be timezone-aware."
+    )
+
+
+class InvalidMaintenanceUploadError(BusinessRuleError):
+    default_message = (
+        "Invalid file upload. "
+        "Only non-empty JPEG, PNG, and WebP images are permitted."
+    )
 
 
 # 500 Internal Server Error

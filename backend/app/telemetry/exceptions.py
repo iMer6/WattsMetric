@@ -31,6 +31,18 @@ class InvalidTelemetryPayloadError(BusinessRuleError):
     default_message = "Telemetry measurement timestamps must be timezone-aware."
 
 
+class TelemetryBatchLimitExceededError(BusinessRuleError):
+    default_message = (
+        "Telemetry batch exceeds the max allowed number of records per request."
+    )
+
+
+class TimeRangeTooLargeError(BusinessRuleError):
+    default_message = (
+        "Requested time interval exceeds the max allowed query window."
+    )
+
+
 # 500 Internal Server Error
 
 

@@ -10,7 +10,10 @@ from app.core.exceptions import (
 
 
 class IoTDeviceNotFoundError(NotFoundError):
-    default_message = "The specified IoT device does not exist."
+    default_message = (
+        "The specified IoT device does not exist "
+        "or does not belong to this energy source."
+    )
 
 
 # 409 Conflict
@@ -28,7 +31,9 @@ class InvalidMacAddressError(BusinessRuleError):
 
 
 class IoTDeviceInactiveError(BusinessRuleError):
-    default_message = "The specified IoT device is deactivated."
+    default_message = (
+        "Telemetry cannot be ingested for a deactivated IoT device."
+    )
 
 
 # 500 Internal Server Error
