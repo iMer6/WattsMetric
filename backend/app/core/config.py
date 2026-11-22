@@ -19,11 +19,18 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # DB (Postgres + asyncpg)
+    
     DB_NAME: str = "watts_metric"
     DB_USER: str = "postgres"
     DB_PASSWORD: SecretStr = SecretStr("")
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
+    
+    # File Uploads (for Maintenance_Photos)
+    
+    UPLOAD_DIR: Path = BASE_DIR.parent / "media" / "photos"
+    UPLOAD_URL: str = "/media/photos/"
+    MAX_PHOTO_SIZE_MB: int = 10
     
     # Authorization & Cookies
     
@@ -48,11 +55,6 @@ class Settings(BaseSettings):
     
     LOGIN_MAX_ATTEMPTS: int = 10
     LOGIN_WINDOW_SECONDS: int = 300
-    
-    # File Uploads (for Maintenance_Photos)
-    
-    UPLOAD_DIR: Path = BASE_DIR / "media" / "photos"
-    MAX_PHOTO_SIZE_MB: int = 10
     
     # Initial seed data
     

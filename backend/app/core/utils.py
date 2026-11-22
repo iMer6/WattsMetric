@@ -1,5 +1,7 @@
 import re
 
+from datetime import datetime, timezone
+
 
 PASSWORD_PATTERN: re.Pattern[str] = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$"
@@ -68,3 +70,15 @@ def escape_like(value: str) -> str:
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+
+
+def ensure_utc_datetime(value: datetime) -> datetime:
+    is_naive: bool = (
+        value.tzinfo is None
+        or value.tzinfo.utcoffset(value) is None
+    )
+    if is_naive:
+        raise ValueError(
+            "Timestamp must be timezone-aware (ISO 8601 with timezone offset or Z)"
+        )
+    return value.astimezone(timezone.utc)

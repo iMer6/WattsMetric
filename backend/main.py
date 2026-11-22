@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
@@ -22,10 +23,10 @@ from app.core.responses import COMMON_RESPONSES
 from app.services.health import check_database_connection
 
 from app.users.router import router as users_router
-# from app.sources.router import router as sources_router
-# from app.iot.router import router as iot_router
-# from app.telemetry.router import router as telemetry_router
-# from app.maintenance.router import router as maintenance_router
+from app.sources.router import router as sources_router
+from app.iot.router import router as iot_router
+from app.telemetry.router import router as telemetry_router
+from app.maintenance.router import router as maintenance_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -76,30 +77,37 @@ app.include_router(
     tags=["Users & Auth"],
     responses=COMMON_RESPONSES,
 )
-# app.include_router(
-#     sources_router,
-#     prefix="/api/v1/sources",
-#     tags=["Sources"],
-#     responses=COMMON_RESPONSES,
-# )
-# app.include_router(
-#     iot_router,
-#     prefix="/api/v1/iot",
-#     tags=["IoT Devices"],
-#     responses=COMMON_RESPONSES,
-# )
-# app.include_router(
-#     telemetry_router,
-#     prefix="/api/v1/telemetry",
-#     tags=["Telemetry & Measurement"],
-#     responses=COMMON_RESPONSES,
-# )
-# app.include_router(
-#     maintenance_router,
-#     prefix="/api/v1/maintenance",
-#     tags=["Maintenance"],
-#     responses=COMMON_RESPONSES,
-# )
+app.include_router(
+    sources_router,
+    prefix="/api/v1/sources",
+    tags=["Sources"],
+    responses=COMMON_RESPONSES,
+)
+app.include_router(
+    iot_router,
+    prefix="/api/v1/iot",
+    tags=["IoT Devices"],
+    responses=COMMON_RESPONSES,
+)
+app.include_router(
+    telemetry_router,
+    prefix="/api/v1/telemetry",
+    tags=["Telemetry & Measurement"],
+    responses=COMMON_RESPONSES,
+)
+app.include_router(
+    maintenance_router,
+    prefix="/api/v1/maintenance",
+    tags=["Maintenance"],
+    responses=COMMON_RESPONSES,
+)
+
+settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    settings.UPLOAD_URL,
+    StaticFiles(directory=settings.UPLOAD_DIR),
+    name="media",
+)
 
 
 @app.get("/", tags=["Root"])
