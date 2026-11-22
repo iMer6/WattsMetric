@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
+
 PASSWORD_PATTERN: re.Pattern[str] = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$"
 )
