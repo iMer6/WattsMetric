@@ -1,495 +1,376 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, exists, func, select, update
+from sqlalchemy import exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.utils import escape_like
-from app.iot.exceptions import IoTDeviceInactiveError, IoTDeviceNotFoundError
+from app.iot.crud import get_iot_device_by_id
+from app.iot.exceptions import IoTDeviceInactiveError
 from app.iot.models import IoTDevice
-from app.sources.crud import ensure_user_source_permission
-from app.sources.exceptions import SourceNotFoundError
-from app.sources.models import Source
-from app.telemetry.exceptions import *
+from app.telemetry.exceptions import (
+    FailedToIngestTelemetryError,
+    FailedToManageTestProfileError,
+    InvalidTelemetryPayloadError,
+    InvalidTimeRangeError,
+    TelemetryBatchLimitExceededError,
+    TestProfileAlreadyExistsError,
+    TestProfileNotFoundError,
+    TimeRangeTooLargeError,
+)
 from app.telemetry.models import Measurement, TestProfile, TimeAggregate
+from app.telemetry.schemas import MAX_TELEMETRY_BATCH_SIZE, MeasurementCreateItem
 
-# Safe chunk size for batch insert (7 columns * 2000 rows = 14,000 parameters < 32,767 asyncpg limit)
-TELEMETRY_BATCH_CHUNK_SIZE: int = 2000
+MAX_RAW_MEASUREMENTS_WINDOW: timedelta = timedelta(days=31)
+MAX_AGGREGATES_WINDOW: timedelta = timedelta(days=366)
 
 
-def _validate_time_range(
-    start_time: datetime,
-    end_time: datetime
-) -> None:
-    has_missing_timezone: bool = (
-        start_time.tzinfo is None
-        or end_time.tzinfo is None
-    )
-    if has_missing_timezone:
+def _is_timezone_aware(dt: datetime) -> bool:
+    return dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) is not None
+
+
+def _validate_time_window(
+    date_from: datetime,
+    date_to: datetime,
+    *,
+    max_window: timedelta,
+) -> tuple[datetime, datetime]:
+    is_date_from_naive: bool = not _is_timezone_aware(date_from)
+    if is_date_from_naive:
         raise InvalidTelemetryPayloadError(
-            "start_time and end_time must include timezone information."
+            "'date_from' must be timezone-aware (UTC)."
         )
 
-    is_invalid_range: bool = start_time > end_time
+    is_date_to_naive: bool = not _is_timezone_aware(date_to)
+    if is_date_to_naive:
+        raise InvalidTelemetryPayloadError(
+            "'date_to' must be timezone-aware (UTC)."
+        )
+
+    utc_from: datetime = date_from.astimezone(timezone.utc)
+    utc_to: datetime = date_to.astimezone(timezone.utc)
+
+    is_invalid_range: bool = utc_from > utc_to
     if is_invalid_range:
-        raise InvalidTimeRangeError()
+        raise InvalidTimeRangeError(
+            "'date_from' must be earlier than or equal to 'date_to'."
+        )
+
+    is_window_exceeded: bool = (utc_to - utc_from) > max_window
+    if is_window_exceeded:
+        raise TimeRangeTooLargeError(
+            f"Requested time interval exceeds the max allowed window of {max_window.days} days."
+        )
+
+    return utc_from, utc_to
 
 
-# Measurements (Telemetry ingestion from ESP32 FIFO buffer and queries)
+# Telemetry & Time Aggregates CRUD
 
 
-async def bulk_insert_measurements(
+async def ingest_measurements_batch(
     db: AsyncSession,
     *,
-    iot_id: UUID,
-    records: Sequence[dict[str, Any]],
-    expected_interval_seconds: int | None = None,
-    update_heartbeat: bool = True,
-) -> dict[str, int]:
+    device: IoTDevice,
+    items: Sequence[MeasurementCreateItem],
+) -> dict[str, Any]:
     """
-    High-performance batch insertion of raw telemetry measurements from the ESP32 FIFO buffer.
-    - duplicate protection on buffer retries via ON CONFLICT (iot_id, measured_at) DO NOTHING.
-    - Automatic chunking to prevent exceeding Postgres/asyncpg parameter limits
-      when flushing long-term offline buffers (up to 72 hours).
-    - automatic gap detection (is_gap=True) when expected_interval_seconds is provided,
-      preserving flags already detected by the microcontroller.
-    """
-    device_stmt = (
-        select(
-            IoTDevice.iot_id,
-            IoTDevice.is_active,
-        )
-        .where(IoTDevice.iot_id == iot_id)
-    )
-    device_result = await db.execute(device_stmt)
-    device_row = device_result.first()
+    Idempotently ingests a batch of buffered telemetry measurements from an ESP32 node.
 
-    if device_row is None:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-    if not device_row.is_active:
+    - Enforces maximum batch size (`MAX_TELEMETRY_BATCH_SIZE`) and device active state.
+    - Deduplicates intra-batch timestamps to prevent Postgres `ON CONFLICT` cardinality errors.
+    - Preserves device `is_gap` markers and automatically flags gaps exceeding 2x the
+          configured `sampling_interval_seconds` in `device.sensor_config`.
+    - Performs bulk `INSERT ... ON CONFLICT (iot_id, measured_at) DO UPDATE` and updates
+          `IoTDevice.last_seen_at` atomically.
+    """
+    is_device_inactive: bool = not device.is_active
+    if is_device_inactive:
         raise IoTDeviceInactiveError(
-            f"IoT device {iot_id} is deactivated and cannot ingest telemetry."
+            f"IoT device {device.iot_id} is deactivated and cannot ingest telemetry."
         )
 
-    if not records:
-        return {
-            "received": 0,
-            "inserted": 0,
-            "duplicates_ignored": 0,
-            "gaps_detected": 0
-        }
+    received_count: int = len(items)
+    is_batch_size_invalid: bool = (
+        received_count == 0 or received_count > MAX_TELEMETRY_BATCH_SIZE
+    )
+    if is_batch_size_invalid:
+        raise TelemetryBatchLimitExceededError(
+            f"Batch must contain between 1 and {MAX_TELEMETRY_BATCH_SIZE} records."
+        )
 
-    # Sort batch by measurement timestamp for accurate gap analysis
-    sorted_records: list[dict[str, Any]] = sorted(
-        records, key=lambda record: record["measured_at"]
+    dedup_by_ts: dict[datetime, MeasurementCreateItem] = {}
+    for item in items:
+        is_timestamp_naive: bool = not _is_timezone_aware(item.measured_at)
+        if is_timestamp_naive:
+            raise InvalidTelemetryPayloadError()
+        dedup_by_ts[item.measured_at.astimezone(timezone.utc)] = item
+
+    ordered_items: list[MeasurementCreateItem] = sorted(
+        dedup_by_ts.values(),
+        key=lambda x: x.measured_at,
     )
 
-    for item in sorted_records:
-        is_naive_timestamp: bool = item["measured_at"].tzinfo is None
-        if is_naive_timestamp:
-            raise InvalidTelemetryPayloadError(
-                "All measurement timestamps must be timezone-aware."
-            )
-
-    prev_measured_at: datetime | None = None
-    max_gap_delta: timedelta | None = None
-    has_valid_interval: bool = (
-        expected_interval_seconds is not None
-        and expected_interval_seconds > 0
+    sampling_interval_raw: Any = (device.sensor_config or {}).get(
+        "sampling_interval_seconds"
+    )
+    is_valid_interval: bool = (
+        isinstance(sampling_interval_raw, (int, float))
+        and sampling_interval_raw > 0
+    )
+    expected_interval_sec: float | None = (
+        float(sampling_interval_raw) if is_valid_interval else None
     )
 
-    if has_valid_interval:
-        max_gap_delta: timedelta = timedelta(
-            seconds=expected_interval_seconds * 1.5
+    rows: list[dict[str, Any]] = []
+    prev_ts: datetime | None = device.last_seen_at
+    gap_count: int = 0
+
+    for item in ordered_items:
+        ts_utc: datetime = item.measured_at.astimezone(timezone.utc)
+        computed_gap: bool = item.is_gap
+
+        can_detect_gap: bool = (
+            not computed_gap
+            and expected_interval_sec is not None
+            and prev_ts is not None
         )
-        first_ts: datetime = sorted_records[0]["measured_at"]
-        prev_ts_stmt = (
-            select(func.max(Measurement.measured_at))
-            .where(
-                and_(
-                    Measurement.iot_id == iot_id,
-                    Measurement.measured_at < first_ts,
-                )
-            )
-        )
-        prev_measured_at: datetime | None = await db.scalar(prev_ts_stmt)
+        if can_detect_gap:
+            delta_sec: float = (ts_utc - prev_ts).total_seconds()
+            is_gap_exceeded: bool = delta_sec > (expected_interval_sec * 2.0)
+            if is_gap_exceeded:
+                computed_gap = True
 
-    prepared_rows: list[dict[str, Any]] = []
-    gaps_detected: int = 0
+        if computed_gap:
+            gap_count += 1
 
-    for item in sorted_records:
-        ts: datetime = item["measured_at"]
-        is_gap: bool = bool(item.get("is_gap", False))
-
-        is_exceeded_delta: bool = (
-            not is_gap
-            and max_gap_delta is not None
-            and prev_measured_at is not None
-            and (ts - prev_measured_at) > max_gap_delta
-        )
-        if is_exceeded_delta:
-            is_gap = True
-
-        if is_gap:
-            gaps_detected += 1
-
-        prepared_rows.append({
-            "iot_id": iot_id,
-            "measured_at": ts,
-            "voltage": item.get("voltage"),
-            "current": item.get("current"),
-            "temperature": item.get("temperature"),
-            "illumination": item.get("illumination"),
-            "is_gap": is_gap,
+        rows.append({
+            "iot_id": device.iot_id,
+            "measured_at": ts_utc,
+            "voltage": item.voltage,
+            "current": item.current,
+            "temperature": item.temperature,
+            "illumination": item.illumination,
+            "is_gap": computed_gap,
         })
-        prev_measured_at: datetime = ts
+        prev_ts = ts_utc
 
-    inserted_total: int = 0
+    latest_measured_at: datetime = (
+        ordered_items[-1].measured_at.astimezone(timezone.utc)
+    )
+
+    insert_stmt = pg_insert(Measurement).values(rows)
+    upsert_stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["iot_id", "measured_at"],
+        set_={
+            "voltage": insert_stmt.excluded.voltage,
+            "current": insert_stmt.excluded.current,
+            "temperature": insert_stmt.excluded.temperature,
+            "illumination": insert_stmt.excluded.illumination,
+            "is_gap": insert_stmt.excluded.is_gap,
+        },
+    )
 
     try:
-        for idx in range(
-            0, len(prepared_rows), TELEMETRY_BATCH_CHUNK_SIZE
-        ):
-            chunk = prepared_rows[idx: idx + TELEMETRY_BATCH_CHUNK_SIZE]
-            insert_stmt = (
-                pg_insert(Measurement)
-                .values(chunk)
-                .on_conflict_do_nothing(
-                    index_elements=["iot_id", "measured_at"]
-                )
-                .returning(Measurement.measured_at)
-            )
-            inserted_scalars = await db.scalars(insert_stmt)
-            inserted_rows = inserted_scalars.all()
-            inserted_total += len(inserted_rows)
+        await db.execute(upsert_stmt)
 
-        if update_heartbeat:
-            heartbeat_stmt = (
-                update(IoTDevice)
-                .where(IoTDevice.iot_id == iot_id)
-                .values(last_seen_at=func.now())
+        device_stmt = (
+            select(IoTDevice)
+            .where(IoTDevice.iot_id == device.iot_id)
+            .with_for_update()
+        )
+        locked_device: IoTDevice | None = await db.scalar(device_stmt)
+        
+        if locked_device is not None:
+            should_update_last_seen: bool = (
+                locked_device.last_seen_at is None
+                or latest_measured_at > locked_device.last_seen_at
             )
-            await db.execute(heartbeat_stmt)
+            
+            if should_update_last_seen:
+                locked_device.last_seen_at = latest_measured_at
 
         await db.commit()
     except SQLAlchemyError as exc:
         await db.rollback()
         raise FailedToIngestTelemetryError() from exc
 
-    received_count: int = len(prepared_rows)
     return {
-        "received": received_count,
-        "inserted": inserted_total,
-        "duplicates_ignored": received_count - inserted_total,
-        "gaps_detected": gaps_detected,
+        "iot_id": device.iot_id,
+        "received_count": received_count,
+        "processed_count": len(rows),
+        "gap_count": gap_count,
+        "latest_measured_at": latest_measured_at,
     }
 
 
-async def get_measurements_range(
+async def get_measurements(
     db: AsyncSession,
     *,
-    actor_id: UUID,
     iot_id: UUID,
-    start_time: datetime,
-    end_time: datetime,
-    limit: int = 10000,
+    date_from: datetime,
+    date_to: datetime,
     only_gaps: bool = False,
-) -> list[Measurement]:
+    skip: int = 0,
+    limit: int = 100,
+) -> tuple[list[Measurement], int]:
     """
-    Retrieves raw telemetry measurements for a specific device within a selected time range.
-    
-    Used for power calculation audits and gap diagnostics.
+    Retrieves paginated raw telemetry measurements for an IoT node within a bounded UTC range.
     """
-    _validate_time_range(start_time, end_time)
-
-    source_stmt = (
-        select(IoTDevice.source_id)
-        .where(IoTDevice.iot_id == iot_id)
-    )
-    source_id: UUID | None = await db.scalar(source_stmt)
-    if source_id is None:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-
-    await ensure_user_source_permission(
-        db, user_id=actor_id, source_id=source_id
+    utc_from, utc_to = _validate_time_window(
+        date_from,
+        date_to,
+        max_window=MAX_RAW_MEASUREMENTS_WINDOW,
     )
 
-    filters: list = [
+    filters: list[Any] = [
         Measurement.iot_id == iot_id,
-        Measurement.measured_at >= start_time,
-        Measurement.measured_at <= end_time,
+        Measurement.measured_at >= utc_from,
+        Measurement.measured_at <= utc_to,
     ]
     if only_gaps:
         filters.append(Measurement.is_gap.is_(True))
 
-    measurements_stmt = (
+    count_stmt = (
+        select(func.count())
+        .select_from(Measurement)
+        .where(*filters)
+    )
+    raw_total: int | None = await db.scalar(count_stmt)
+    total: int = int(raw_total or 0)
+
+    is_empty_result: bool = total == 0
+    if is_empty_result:
+        return [], 0
+
+    data_stmt = (
         select(Measurement)
-        .where(and_(*filters))
+        .where(*filters)
         .order_by(Measurement.measured_at.asc())
+        .offset(skip)
         .limit(limit)
     )
-    measurements_scalars = await db.scalars(measurements_stmt)
-    return list(measurements_scalars.all())
+    result = await db.scalars(data_stmt)
+    return list(result.all()), total
 
 
-async def get_measurement_gaps(
+async def get_time_aggregates(
     db: AsyncSession,
     *,
-    actor_id: UUID,
-    iot_id: UUID,
-    start_time: datetime,
-    end_time: datetime,
-    limit: int = 1000,
-) -> list[Measurement]:
-    """
-    Fast retrieval of telemetry records with detected gaps (is_gap=True)
-    utilizing the partial index idx_measurements_iot_id_measured_at_gap.
-    """
-    return await get_measurements_range(
-        db,
-        iot_id=iot_id,
-        start_time=start_time,
-        end_time=end_time,
-        limit=limit,
-        only_gaps=True,
-        actor_id=actor_id,
-    )
-
-
-# Time Aggregates (Generation time aggregates and analytics)
-
-
-async def upsert_time_aggregate(
-    db: AsyncSession,
-    *,
-    iot_id: UUID,
-    bucket: datetime,
-    total_energy: Decimal,
-    avg_voltage: Decimal | None = None,
-    avg_current: Decimal | None = None,
-    avg_temperature: Decimal | None = None,
-    avg_illumination: Decimal | None = None,
-) -> TimeAggregate:
-    """
-    Idempotently creates or updates an aggregated time interval (bucket) for an IoT node
-    via Postgres ON CONFLICT (iot_id, bucket) DO UPDATE.
-    """
-    is_naive_bucket: bool = bucket.tzinfo is None
-    if is_naive_bucket:
-        raise InvalidTelemetryPayloadError(
-            "Aggregate bucket timestamp must be timezone-aware."
-        )
-
-    device_exists_stmt = select(
-        exists().where(IoTDevice.iot_id == iot_id)
-    )
-    device_exists: bool | None = await db.scalar(device_exists_stmt)
-    if not device_exists:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-
-    insert_stmt = pg_insert(TimeAggregate).values(
-        iot_id=iot_id,
-        bucket=bucket,
-        total_energy=total_energy,
-        avg_voltage=avg_voltage,
-        avg_current=avg_current,
-        avg_temperature=avg_temperature,
-        avg_illumination=avg_illumination,
-    )
-    upsert_stmt = (
-        insert_stmt.on_conflict_do_update(
-            index_elements=["iot_id", "bucket"],
-            set_={
-                "total_energy": insert_stmt.excluded.total_energy,
-                "avg_voltage": insert_stmt.excluded.avg_voltage,
-                "avg_current": insert_stmt.excluded.avg_current,
-                "avg_temperature": insert_stmt.excluded.avg_temperature,
-                "avg_illumination": insert_stmt.excluded.avg_illumination,
-            },
-        )
-        .returning(TimeAggregate)
-    )
-
-    try:
-        aggregate: TimeAggregate | None = await db.scalar(upsert_stmt)
-        await db.commit()
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        raise FailedToUpsertAggregateError() from exc
-
-    if aggregate is None:
-        raise FailedToUpsertAggregateError()
-    return aggregate
-
-
-async def bulk_upsert_time_aggregates(
-    db: AsyncSession,
-    *,
-    aggregates: Sequence[dict[str, Any]],
-) -> int:
-    """
-    Batch idempotent update or insertion of time aggregates (for recalculation
-    after backfilling data from the ESP32 offline buffer).
-    """
-    if not aggregates:
-        return 0
-
-    for item in aggregates:
-        is_naive_bucket: bool = item["bucket"].tzinfo is None
-        if is_naive_bucket:
-            raise InvalidTelemetryPayloadError(
-                "All aggregate bucket timestamps must be timezone-aware."
-            )
-
-    affected_total: int = 0
-    chunk_size: int = 1500
-
-    try:
-        for idx in range(0, len(aggregates), chunk_size):
-            chunk = list(aggregates[idx: idx + chunk_size])
-            insert_stmt = pg_insert(TimeAggregate).values(chunk)
-            upsert_stmt = (
-                insert_stmt.on_conflict_do_update(
-                    index_elements=["iot_id", "bucket"],
-                    set_={
-                        "total_energy": insert_stmt.excluded.total_energy,
-                        "avg_voltage": insert_stmt.excluded.avg_voltage,
-                        "avg_current": insert_stmt.excluded.avg_current,
-                        "avg_temperature": insert_stmt.excluded.avg_temperature,
-                        "avg_illumination": insert_stmt.excluded.avg_illumination,
-                    },
-                )
-                .returning(TimeAggregate.bucket)
-            )
-            upsert_scalars = await db.scalars(upsert_stmt)
-            rows = upsert_scalars.all()
-            affected_total += len(rows)
-
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise IoTDeviceNotFoundError(
-            "One or more iot_id values in aggregates do not exist."
-        ) from exc
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        raise FailedToUpsertAggregateError() from exc
-
-    return affected_total
-
-
-async def get_time_aggregates_by_device(
-    db: AsyncSession,
-    *,
-    actor_id: UUID,
-    iot_id: UUID,
-    start_time: datetime,
-    end_time: datetime,
-) -> list[TimeAggregate]:
-    """
-    Retrieves generation time aggregates
-    for a specific measurement node over a given period.
-    """
-    _validate_time_range(start_time, end_time)
-
-    source_stmt = (
-        select(IoTDevice.source_id)
-        .where(IoTDevice.iot_id == iot_id)
-    )
-    source_id: UUID | None = await db.scalar(source_stmt)
-    if source_id is None:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-
-    await ensure_user_source_permission(
-        db, user_id=actor_id, source_id=source_id
-    )
-
-    aggregates_stmt = (
-        select(TimeAggregate)
-        .where(
-            and_(
-                TimeAggregate.iot_id == iot_id,
-                TimeAggregate.bucket >= start_time,
-                TimeAggregate.bucket <= end_time,
-            )
-        )
-        .order_by(TimeAggregate.bucket.asc())
-    )
-    aggregates_scalars = await db.scalars(aggregates_stmt)
-    return list(aggregates_scalars.all())
-
-
-async def get_time_aggregates_by_source(
-    db: AsyncSession,
-    *,
-    actor_id: UUID,
     source_id: UUID,
-    start_time: datetime,
-    end_time: datetime,
-) -> list[dict[str, Any]]:
+    date_from: datetime,
+    date_to: datetime,
+    iot_id: UUID | None = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> tuple[list[TimeAggregate], int]:
     """
-    Summary time analytics across an entire generation facility (total energy and average
-    parameters across all active station nodes grouped by time buckets) for building
-    charts and comparing periods.
+    Retrieves paginated energy and environmental time aggregates (`time_aggregates`)
+    for an energy source (optionally filtered to a specific `iot_id` belonging to `source_id`).
     """
-    _validate_time_range(start_time, end_time)
-
-    source_exists_stmt = select(
-        exists().where(Source.source_id == source_id)
-    )
-    source_exists: bool | None = await db.scalar(source_exists_stmt)
-    if not source_exists:
-        raise SourceNotFoundError(f"Source {source_id} not found.")
-
-    await ensure_user_source_permission(
-        db, user_id=actor_id, source_id=source_id
+    utc_from, utc_to = _validate_time_window(
+        date_from,
+        date_to,
+        max_window=MAX_AGGREGATES_WINDOW,
     )
 
-    aggregates_stmt = (
-        select(
-            TimeAggregate.bucket.label("bucket"),
-            func.sum(TimeAggregate.total_energy).label("total_energy"),
-            func.avg(TimeAggregate.avg_voltage).label("avg_voltage"),
-            func.avg(TimeAggregate.avg_current).label("avg_current"),
-            func.avg(TimeAggregate.avg_temperature).label("avg_temperature"),
-            func.avg(TimeAggregate.avg_illumination).label("avg_illumination"),
-        )
-        .join(
-            IoTDevice, IoTDevice.iot_id == TimeAggregate.iot_id
-        )
-        .where(
-            and_(
-                IoTDevice.source_id == source_id,
-                TimeAggregate.bucket >= start_time,
-                TimeAggregate.bucket <= end_time,
-            )
-        )
-        .group_by(TimeAggregate.bucket)
-        .order_by(TimeAggregate.bucket.asc())
-    )
+    has_iot_filter: bool = iot_id is not None
+    if has_iot_filter:
+        await get_iot_device_by_id(db, source_id=source_id, iot_id=iot_id)
 
-    aggregates_result = await db.execute(aggregates_stmt)
-    rows = aggregates_result.all()
-    return [
-        {
-            "bucket": row.bucket,
-            "total_energy": row.total_energy,
-            "avg_voltage": row.avg_voltage,
-            "avg_current": row.avg_current,
-            "avg_temperature": row.avg_temperature,
-            "avg_illumination": row.avg_illumination,
-        } for row in rows
+    filters: list[Any] = [
+        IoTDevice.source_id == source_id,
+        TimeAggregate.bucket >= utc_from,
+        TimeAggregate.bucket <= utc_to,
     ]
+    if has_iot_filter:
+        filters.append(TimeAggregate.iot_id == iot_id)
+
+    count_stmt = (
+        select(func.count())
+        .select_from(TimeAggregate)
+        .join(
+            IoTDevice,
+            IoTDevice.iot_id == TimeAggregate.iot_id
+        )
+        .where(*filters)
+    )
+    raw_total: int | None = await db.scalar(count_stmt)
+    total: int = int(raw_total or 0)
+
+    is_empty_result: bool = total == 0
+    if is_empty_result:
+        return [], 0
+
+    agg_stmt = (
+        select(TimeAggregate)
+        .join(
+            IoTDevice,
+            IoTDevice.iot_id == TimeAggregate.iot_id
+        )
+        .where(*filters)
+        .order_by(
+            TimeAggregate.bucket.asc(),
+            TimeAggregate.iot_id.asc()
+        )
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.scalars(agg_stmt)
+    return list(result.all()), total
 
 
-# Test Profiles (Test profiles for simulation and calibration)
+# Test Profiles CRUD
+
+
+async def get_test_profiles(
+    db: AsyncSession,
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    search: str | None = None,
+) -> tuple[list[TestProfile], int]:
+    """
+    Returns a paginated list of saved calibration/replay test profiles.
+    """
+    filters: list[Any] = []
+    trimmed_search: str = search.strip() if search else ""
+    has_search_query: bool = bool(trimmed_search)
+    if has_search_query:
+        escaped: str = f"%{escape_like(trimmed_search)}%"
+        filters.append(
+            TestProfile.test_profile_name.ilike(escaped, escape="\\")
+        )
+
+    count_stmt = (
+        select(func.count(TestProfile.test_profile_id))
+        .where(*filters)
+    )
+    raw_total: int | None = await db.scalar(count_stmt)
+    total: int = int(raw_total or 0)
+
+    is_empty_result: bool = total == 0
+    if is_empty_result:
+        return [], 0
+
+    stmt = (
+        select(TestProfile)
+        .where(*filters)
+        .order_by(
+            TestProfile.created_at.desc(),
+            TestProfile.test_profile_id.asc(),
+        )
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.scalars(stmt)
+    return list(result.all()), total
 
 
 async def create_test_profile(
@@ -499,15 +380,19 @@ async def create_test_profile(
     profile_payload: dict[str, Any],
 ) -> TestProfile:
     """
-    Saves a new JSON generation simulation scenario.
+    Creates a new synthetic or archived test profile for replay calibration.
+
+    Raises:
+        TestProfileAlreadyExistsError: If `test_profile_name` already exists.
     """
     cleaned_name: str = test_profile_name.strip()
 
-    name_exists_stmt = select(
+    exists_stmt = select(
         exists().where(TestProfile.test_profile_name == cleaned_name)
     )
-    name_exists: bool | None = await db.scalar(name_exists_stmt)
-    if name_exists:
+    profile_already_exists: bool = bool(await db.scalar(exists_stmt))
+    
+    if profile_already_exists:
         raise TestProfileAlreadyExistsError(
             f"Test profile '{cleaned_name}' already exists."
         )
@@ -526,6 +411,7 @@ async def create_test_profile(
         is_duplicate_name_error: bool = (
             "test_profile_name" in str(exc.orig).lower()
         )
+        
         if is_duplicate_name_error:
             raise TestProfileAlreadyExistsError(
                 f"Test profile '{cleaned_name}' already exists."
@@ -540,108 +426,22 @@ async def create_test_profile(
 
 async def get_test_profile_by_id(
     db: AsyncSession,
+    *,
     test_profile_id: UUID,
 ) -> TestProfile:
     """
-    Retrieves a simulation test profile by UUID.
+    Fetches a complete test profile including its JSONB `profile_payload` for replay.
     """
-    profile_stmt = (
+    stmt = (
         select(TestProfile)
         .where(TestProfile.test_profile_id == test_profile_id)
     )
-    profile: TestProfile | None = await db.scalar(profile_stmt)
-    if profile is None:
+    profile: TestProfile | None = await db.scalar(stmt)
+
+    is_profile_missing: bool = profile is None
+    
+    if is_profile_missing:
         raise TestProfileNotFoundError(
             f"Test profile {test_profile_id} not found."
         )
     return profile
-
-
-async def get_test_profile_by_name(
-    db: AsyncSession,
-    test_profile_name: str,
-) -> TestProfile:
-    """
-    Retrieves a simulation test profile by its unique name.
-    """
-    cleaned_name: str = test_profile_name.strip()
-    profile_stmt = (
-        select(TestProfile)
-        .where(TestProfile.test_profile_name == cleaned_name)
-    )
-    profile: TestProfile | None = await db.scalar(profile_stmt)
-    if profile is None:
-        raise TestProfileNotFoundError(
-            f"Test profile '{cleaned_name}' not found."
-        )
-    return profile
-
-
-async def get_test_profiles(
-    db: AsyncSession,
-    *,
-    skip: int = 0,
-    limit: int = 50,
-    search: str | None = None,
-) -> tuple[list[TestProfile], int]:
-    """
-    Returns a paginated list of all simulation test profiles.
-    """
-    filters: list[Any] = []
-    has_search_query: bool = bool(search and search.strip())
-    if has_search_query and search is not None:
-        escaped: str = f"%{escape_like(search.strip())}%"
-        filters.append(
-            TestProfile.test_profile_name.ilike(escaped, escape="\\")
-        )
-
-    count_stmt = (
-        select(func.count(TestProfile.test_profile_id))
-        .where(*filters)
-    )
-    total_raw = await db.scalar(count_stmt)
-    total: int = int(total_raw or 0)
-    if total == 0:
-        return [], 0
-
-    profiles_stmt = (
-        select(TestProfile)
-        .where(*filters)
-        .order_by(
-            TestProfile.created_at.desc(),
-            TestProfile.test_profile_id.asc()
-        )
-        .offset(skip)
-        .limit(limit)
-    )
-    profiles_scalars = await db.scalars(profiles_stmt)
-    profiles: list[TestProfile] = list(profiles_scalars.all())
-    return profiles, total
-
-
-async def delete_test_profile(
-    db: AsyncSession,
-    test_profile_id: UUID,
-) -> None:
-    """
-    Deletes a simulation test profile.
-    """
-    exists_stmt = select(
-        exists().where(TestProfile.test_profile_id == test_profile_id)
-    )
-    exists_flag: bool | None = await db.scalar(exists_stmt)
-    if not exists_flag:
-        raise TestProfileNotFoundError(
-            f"Test profile {test_profile_id} not found."
-        )
-
-    try:
-        delete_stmt = (
-            delete(TestProfile)
-            .where(TestProfile.test_profile_id == test_profile_id)
-        )
-        await db.execute(delete_stmt)
-        await db.commit()
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        raise FailedToManageTestProfileError() from exc
