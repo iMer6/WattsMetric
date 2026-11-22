@@ -1,71 +1,107 @@
-from __future__ import annotations
-
-from datetime import datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, exists, func, select, update
+from sqlalchemy import and_, exists, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
-from app.core.enums import RoleName
 from app.core.utils import normalise_mac_address
 
-from app.iot.exceptions import *
+from app.iot.exceptions import (
+    FailedToCreateIoTDeviceError,
+    FailedToDeleteIoTDeviceError,
+    FailedToUpdateIoTDeviceError,
+    InvalidMacAddressError,
+    IoTDeviceMacAlreadyExistsError,
+    IoTDeviceNotFoundError,
+)
 from app.iot.models import IoTDevice
-from app.sources.crud import ensure_user_source_permission
-from app.sources.exceptions import SourceNotFoundError
-from app.sources.models import Source
+
+
+async def get_iot_devices_for_source(
+    db: AsyncSession,
+    *,
+    source_id: UUID,
+) -> list[IoTDevice]:
+    """
+    Returns all ESP32 IoT devices commissioned on the given energy source.
+    """
+    stmt = (
+        select(IoTDevice)
+        .where(IoTDevice.source_id == source_id)
+        .order_by(
+            IoTDevice.created_at.desc(),
+            IoTDevice.iot_id.asc()
+        )
+    )
+    result = await db.scalars(stmt)
+    return list(result.all())
+
+
+async def get_iot_device_by_id(
+    db: AsyncSession,
+    *,
+    source_id: UUID,
+    iot_id: UUID,
+) -> IoTDevice:
+    # noinspection SpellCheckingInspection
+    """
+    Fetches an IoT device strictly scoped to `source_id` (BOLA/IDOR protection).
+
+    Raises:
+        IoTDeviceNotFoundError: If the device does not exist or belongs to another source.
+    """
+    stmt = (
+        select(IoTDevice)
+        .where(
+            and_(
+                IoTDevice.iot_id == iot_id,
+                IoTDevice.source_id == source_id,
+            )
+        )
+    )
+    device: IoTDevice | None = await db.scalar(stmt)
+    if device is None:
+        raise IoTDeviceNotFoundError(
+            f"IoT device {iot_id} was not found on energy source {source_id}."
+        )
+    return device
 
 
 async def create_iot_device(
     db: AsyncSession,
     *,
-    actor_id: UUID,
     source_id: UUID,
     esp32_mac: str,
-    firmware_version: str | None = None,
-    sensor_config: dict[str, Any] | None = None,
+    firmware_version: str,
+    sensor_config: dict[str, Any],
     is_active: bool = True,
 ) -> IoTDevice:
     """
-    Registers a new ESP32 measurement node and links it to a generation source.
+    Commissions a new ESP32 microcontroller onto an energy source.
 
-    Verifies OWNER or ENGINEER permissions for this station.
+    Raises:
+        ValueError: If `esp32_mac` is not a normalised EUI-48 address.
+        IoTDeviceMacAlreadyExistsError: If `esp32_mac` is already registered anywhere in the system.
     """
-    norm_mac: str = normalise_mac_address(esp32_mac)
-
-    source_exists_stmt = select(
-        exists().where(Source.source_id == source_id)
-    )
-    source_exists: bool | None = await db.scalar(source_exists_stmt)
-    if not source_exists:
-        raise SourceNotFoundError(f"Source {source_id} not found.")
-
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=source_id,
-        allowed_source_roles=(
-            RoleName.OWNER.value,
-            RoleName.ENGINEER.value,
-        ),
-    )
+    try:
+        normalised_mac: str = normalise_mac_address(esp32_mac)
+    except ValueError as exc:
+        raise InvalidMacAddressError(str(exc)) from exc
 
     mac_exists_stmt = select(
-        exists().where(IoTDevice.esp32_mac == norm_mac)
+        exists().where(IoTDevice.esp32_mac == normalised_mac)
     )
     mac_exists: bool | None = await db.scalar(mac_exists_stmt)
     if mac_exists:
         raise IoTDeviceMacAlreadyExistsError(
-            f"IoT device with MAC '{norm_mac}' is already registered."
+            f"IoT device with MAC address '{normalised_mac}' is already registered."
         )
 
     device: IoTDevice = IoTDevice(
         source_id=source_id,
-        esp32_mac=norm_mac,
-        firmware_version=firmware_version.strip() if firmware_version else None,
+        esp32_mac=normalised_mac,
+        firmware_version=firmware_version.strip(),
         sensor_config=sensor_config,
         is_active=is_active,
     )
@@ -73,298 +109,95 @@ async def create_iot_device(
     try:
         db.add(device)
         await db.commit()
+        await db.refresh(device)
     except IntegrityError as exc:
         await db.rollback()
-        is_duplicate_mac_error: bool = "esp32_mac" in str(exc.orig).lower()
-        if is_duplicate_mac_error:
+        is_esp32_mac_conflict: bool = "esp32_mac" in str(exc.orig).lower()
+        if is_esp32_mac_conflict:
             raise IoTDeviceMacAlreadyExistsError(
-                f"IoT device with MAC '{norm_mac}' is already registered."
+                f"IoT device with MAC address '{normalised_mac}' is already registered."
             ) from exc
         raise FailedToCreateIoTDeviceError() from exc
     except SQLAlchemyError as exc:
         await db.rollback()
         raise FailedToCreateIoTDeviceError() from exc
 
-    return await get_iot_device_by_id(
-        db,
-        cast(UUID, device.iot_id),
-        actor_id=actor_id,
-        include_source=True,
-    )
-
-
-async def get_iot_device_by_id(
-    db: AsyncSession,
-    iot_id: UUID,
-    *,
-    actor_id: UUID,
-    include_source: bool = False,
-) -> IoTDevice:
-    """
-    Retrieves an IoT device by its UUID.
-    """
-    iot_device_stmt = (
-        select(IoTDevice)
-        .where(IoTDevice.iot_id == iot_id)
-    )
-    if include_source:
-        iot_device_stmt = (
-            iot_device_stmt.options(joinedload(IoTDevice.source))
-        )
-
-    device: IoTDevice | None = await db.scalar(iot_device_stmt)
-    is_device_missing: bool = device is None
-    if is_device_missing:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-
-    device_source_id: UUID = cast(UUID, device.source_id)
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=device_source_id,
-    )
-
     return device
-
-
-async def get_iot_device_by_mac(
-    db: AsyncSession,
-    esp32_mac: str,
-    *,
-    actor_id: UUID,
-    include_source: bool = True,
-) -> IoTDevice:
-    """
-    Finds an IoT node by its ESP32 hardware MAC address.
-
-    For telemetry ingestion and BLE diagnostics.
-    """
-    norm_mac: str = normalise_mac_address(esp32_mac)
-    iot_device_stmt = (
-        select(IoTDevice)
-        .where(IoTDevice.esp32_mac == norm_mac)
-    )
-    if include_source:
-        iot_device_stmt = (
-            iot_device_stmt.options(joinedload(IoTDevice.source))
-        )
-
-    device: IoTDevice | None = await db.scalar(iot_device_stmt)
-    is_device_missing: bool = device is None
-    if is_device_missing:
-        raise IoTDeviceNotFoundError(
-            f"IoT device with MAC '{norm_mac}' not found."
-        )
-
-    device_source_id: UUID = cast(UUID, device.source_id)
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=device_source_id,
-    )
-
-    return device
-
-
-async def get_iot_devices_by_source(
-    db: AsyncSession,
-    source_id: UUID,
-    *,
-    actor_id: UUID,
-    is_active: bool | None = None,
-) -> list[IoTDevice]:
-    """
-    Returns a list of all IoT devices linked to the specified generation source.
-    """
-    source_exists_stmt = select(
-        exists().where(Source.source_id == source_id)
-    )
-    source_exists: bool | None = await db.scalar(source_exists_stmt)
-    if not source_exists:
-        raise SourceNotFoundError(f"Source {source_id} not found.")
-
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=source_id,
-    )
-
-    filters: list = [IoTDevice.source_id == source_id]
-    has_active_filter: bool = is_active is not None
-    if has_active_filter:
-        filters.append(IoTDevice.is_active.is_(is_active))
-
-    iot_devices_stmt = (
-        select(IoTDevice)
-        .where(and_(*filters))
-        .order_by(
-            IoTDevice.created_at.asc(),
-            IoTDevice.iot_id.asc(),
-        )
-    )
-    result = await db.scalars(iot_devices_stmt)
-    return list(result.all())
 
 
 async def update_iot_device(
     db: AsyncSession,
     *,
+    source_id: UUID,
     iot_id: UUID,
-    actor_id: UUID,
-    source_id: UUID | None = None,
     firmware_version: str | None = None,
     sensor_config: dict[str, Any] | None = None,
     is_active: bool | None = None,
 ) -> IoTDevice:
     """
-    Updates the sensor configuration (JSONB), firmware version,
-    active status, or station assignment.
+    Updates firmware version, sensor calibration JSONB config, or active status
+    of an ESP32 IoT node attached to `source_id`.
     """
-    iot_device_stmt = (
+    stmt = (
         select(IoTDevice)
-        .where(IoTDevice.iot_id == iot_id)
+        .where(
+            and_(
+                IoTDevice.iot_id == iot_id,
+                IoTDevice.source_id == source_id,
+            )
+        )
         .with_for_update()
     )
-    device: IoTDevice | None = await db.scalar(iot_device_stmt)
-    is_device_missing: bool = device is None
-    if is_device_missing:
-        raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-
-    current_source_id: UUID = cast(UUID, device.source_id)
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=current_source_id,
-        allowed_source_roles=(
-            RoleName.OWNER.value,
-            RoleName.ENGINEER.value,
-        ),
-    )
-
-    is_source_changed: bool = (
-        source_id is not None
-        and source_id != current_source_id
-    )
-    if source_id is not None and is_source_changed:
-        target_source_exists_stmt = select(
-            exists().where(Source.source_id == source_id)
+    device: IoTDevice | None = await db.scalar(stmt)
+    if device is None:
+        raise IoTDeviceNotFoundError(
+            f"IoT device {iot_id} was not found on energy source {source_id}."
         )
-        target_source_exists: bool | None = (
-            await db.scalar(target_source_exists_stmt)
-        )
-        if not target_source_exists:
-            raise SourceNotFoundError(
-                f"Target source {source_id} not found."
-            )
 
-        await ensure_user_source_permission(
-            db,
-            user_id=actor_id,
-            source_id=source_id,
-            allowed_source_roles=(
-                RoleName.OWNER.value,
-                RoleName.ENGINEER.value,
-            ),
-        )
-        device.source_id = source_id
-
-    has_firmware_update: bool = firmware_version is not None
-    if has_firmware_update:
-        device.firmware_version = firmware_version.strip() or None
-
-    has_sensor_config_update: bool = sensor_config is not None
-    if has_sensor_config_update:
+    if firmware_version is not None:
+        device.firmware_version = firmware_version.strip()
+    if sensor_config is not None:
         device.sensor_config = sensor_config
-
-    has_active_status_update: bool = is_active is not None
-    if has_active_status_update:
+    if is_active is not None:
         device.is_active = is_active
 
     try:
         await db.commit()
+        await db.refresh(device)
     except SQLAlchemyError as exc:
         await db.rollback()
         raise FailedToUpdateIoTDeviceError() from exc
 
-    return await get_iot_device_by_id(
-        db,
-        iot_id,
-        actor_id=actor_id,
-        include_source=True,
-    )
-
-
-async def update_device_heartbeat(
-    db: AsyncSession,
-    *,
-    iot_id: UUID,
-    seen_at: datetime | None = None,
-    firmware_version: str | None = None,
-) -> None:
-    """
-    Atomically updates the last activity timestamp (last_seen_at) of the ESP32 node
-    without row locking or unnecessary object fetching.
-    """
-    values: dict[str, Any] = {
-        "last_seen_at": seen_at if seen_at is not None else func.now(),
-    }
-    has_firmware_update: bool = firmware_version is not None
-    if has_firmware_update:
-        values["firmware_version"] = firmware_version.strip() or None
-
-    iot_device_stmt = (
-        update(IoTDevice)
-        .where(IoTDevice.iot_id == iot_id)
-        .values(**values)
-        .returning(IoTDevice.iot_id)
-    )
-
-    try:
-        updated_id: UUID | None = await db.scalar(iot_device_stmt)
-        is_device_missing: bool = updated_id is None
-        if is_device_missing:
-            raise IoTDeviceNotFoundError(f"IoT device {iot_id} not found.")
-        await db.commit()
-    except IoTDeviceNotFoundError:
-        await db.rollback()
-        raise
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        raise FailedToUpdateIoTDeviceError(
-            f"Failed to update heartbeat for device {iot_id}"
-        ) from exc
+    return device
 
 
 async def delete_iot_device(
     db: AsyncSession,
     *,
+    source_id: UUID,
     iot_id: UUID,
-    actor_id: UUID,
 ) -> None:
     """
-    Deletes an IoT device from the database.
+    Removes an ESP32 IoT device record strictly scoped to `source_id`.
     """
-    device: IoTDevice = await get_iot_device_by_id(
-        db,
-        iot_id,
-        actor_id=actor_id,
+    stmt = (
+        select(IoTDevice)
+        .where(
+            and_(
+                IoTDevice.iot_id == iot_id,
+                IoTDevice.source_id == source_id,
+            )
+        )
+        .with_for_update()
     )
-
-    device_source_id: UUID = cast(UUID, device.source_id)
-    await ensure_user_source_permission(
-        db,
-        user_id=actor_id,
-        source_id=device_source_id,
-        allowed_source_roles=(RoleName.OWNER.value,),
-    )
-
-    delete_iot_stmt = (
-        delete(IoTDevice)
-        .where(IoTDevice.iot_id == iot_id)
-    )
+    device: IoTDevice | None = await db.scalar(stmt)
+    if device is None:
+        raise IoTDeviceNotFoundError(
+            f"IoT device {iot_id} was not found on energy source {source_id}."
+        )
 
     try:
-        await db.execute(delete_iot_stmt)
+        await db.delete(device)
         await db.commit()
     except SQLAlchemyError as exc:
         await db.rollback()
