@@ -125,6 +125,6 @@ class Source(Base):
         return (
             f"<Source(source_id={self.source_id!r}, "
             f"source_name={self.source_name!r}, "
-            f"status={self.source_status!r})"
+            f"status={self.source_status!r}"
             f"is_active={self.is_active!r})>"
         )

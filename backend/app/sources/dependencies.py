@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Any
 from uuid import UUID
