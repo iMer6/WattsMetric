@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, exists, func, or_, select
@@ -13,7 +13,15 @@ from sqlalchemy.orm import selectinload
 from app.core.enums import RoleName, SourceStatus
 from app.core.utils import escape_like
 
-from app.sources.exceptions import *
+from app.sources.exceptions import (
+    FailedToCreateSourceError,
+    FailedToDeleteSourceError,
+    FailedToUpdateSourceError,
+    InvalidSourceCoordinatesError,
+    SourceAccessDeniedError,
+    SourceNotFoundError,
+    SourceQrCodeAlreadyExistsError,
+)
 from app.sources.models import Source
 
 from app.users.models import Role, User, UserRole, UserSourceAccess
@@ -23,26 +31,48 @@ SYSTEM_ROLE_NAMES: frozenset[str] = frozenset({
     RoleName.ADMIN.value,
 })
 
+MIN_LATITUDE: Decimal = Decimal("-90")
+MAX_LATITUDE: Decimal = Decimal("90")
+MIN_LONGITUDE: Decimal = Decimal("-180")
+MAX_LONGITUDE: Decimal = Decimal("180")
+
+
+def _is_out_of_range(
+    value: Decimal | None,
+    min_val: Decimal,
+    max_val: Decimal,
+) -> bool:
+    if value is None:
+        return False
+    return value < min_val or value > max_val
+
 
 def _validate_coordinates(
     latitude: Decimal | None,
     longitude: Decimal | None,
 ) -> None:
-    is_invalid_latitude: bool = latitude is not None and not (
-        Decimal("-90") <= latitude <= Decimal("90")
+    is_invalid_latitude: bool = (
+        _is_out_of_range(latitude, MIN_LATITUDE, MAX_LATITUDE)
     )
     if is_invalid_latitude:
         raise InvalidSourceCoordinatesError(
             "Latitude must be between -90 and 90 degrees."
         )
 
-    is_invalid_longitude: bool = longitude is not None and not (
-        Decimal("-180") <= longitude <= Decimal("180")
+    is_invalid_longitude: bool = (
+        _is_out_of_range(longitude, MIN_LONGITUDE, MAX_LONGITUDE)
     )
     if is_invalid_longitude:
         raise InvalidSourceCoordinatesError(
             "Longitude must be between -180 and 180 degrees."
         )
+
+
+def _active_source_filters(include_inactive: bool) -> list[Any]:
+    is_active_only = not include_inactive
+    if is_active_only:
+        return [Source.is_active.is_(True)]
+    return []
 
 
 async def _user_has_system_role(
@@ -79,7 +109,7 @@ async def ensure_user_source_permission(
     if is_system_admin:
         return
 
-    conditions: list = [
+    conditions: list[Any] = [
         UserSourceAccess.user_id == user_id,
         UserSourceAccess.source_id == source_id,
         User.user_id == user_id,
@@ -89,14 +119,37 @@ async def ensure_user_source_permission(
     if has_role_restrictions:
         conditions.extend([
             UserSourceAccess.role_id == Role.role_id,
-            Role.role_name.in_(tuple(allowed_source_roles)),  # type: ignore[arg-type]
+            Role.role_name.in_(tuple(allowed_source_roles)),
         ])
 
-    access_stmt = select(exists().where(and_(*conditions)))
+    access_stmt = select(
+        exists().where(and_(*conditions))
+    )
     has_access: bool | None = await db.scalar(access_stmt)
-    if not has_access:
+    is_access_denied: bool = not has_access
+    if is_access_denied:
         raise SourceAccessDeniedError(
             f"User {user_id} is not authorized for source {source_id}."
+        )
+
+
+async def _validate_unique_qr_code(
+    db: AsyncSession,
+    cleaned_qr: str,
+    exclude_source_id: UUID | None = None,
+) -> None:
+    conditions: list[Any] = [Source.qr_code == cleaned_qr]
+    has_excluded_source: bool = exclude_source_id is not None
+    if has_excluded_source:
+        conditions.append(Source.source_id != exclude_source_id)
+
+    qr_exists_stmt = select(
+        exists().where(and_(*conditions))
+    )
+    qr_already_exists: bool | None = await db.scalar(qr_exists_stmt)
+    if qr_already_exists:
+        raise SourceQrCodeAlreadyExistsError(
+            f"Energy source with QR code '{cleaned_qr}' already exists."
         )
 
 
@@ -119,27 +172,23 @@ async def create_source(
     """
     _validate_coordinates(latitude, longitude)
     cleaned_qr: str = qr_code.strip()
-
-    existing_qr_stmt = select(
-        exists().where(Source.qr_code == cleaned_qr)
-    )
-    qr_already_exists: bool | None = await db.scalar(existing_qr_stmt)
-    if qr_already_exists:
-        raise SourceQrCodeAlreadyExistsError(
-            f"Energy source with QR code '{cleaned_qr}' already exists."
-        )
+    await _validate_unique_qr_code(db, cleaned_qr)
 
     owner_role_id: int | None = None
     has_owner: bool = owner_user_id is not None
     if has_owner:
-        owner_role_stmt = select(Role.role_id).where(
-            Role.role_name == RoleName.OWNER.value
+        owner_role_stmt = (
+            select(Role.role_id)
+            .where(Role.role_name == RoleName.OWNER.value)
         )
-        owner_role_id: int | None = await db.scalar(owner_role_stmt)
+        owner_role_id = await db.scalar(owner_role_stmt)
 
+    cleaned_address: str | None = (
+        source_address.strip() if source_address else None
+    )
     new_source: Source = Source(
         source_name=source_name.strip(),
-        source_address=source_address.strip() if source_address else None,
+        source_address=cleaned_address,
         latitude=latitude,
         longitude=longitude,
         qr_code=cleaned_qr,
@@ -189,30 +238,37 @@ async def get_source_by_id(
     source_id: UUID,
     *,
     actor_id: UUID,
+    allowed_source_roles: Sequence[str] | None = None,
     include_devices: bool = False,
     include_inactive: bool = False,
 ) -> Source:
     """
     Retrieves a generation source by UUID with optional IoT node preloading
-    and user permission verification. Excludes soft-deleted (`is_active=False`) sources by default.
+    and user permission verification.
+    Excludes soft-deleted (`is_active=False`) sources by default.
     """
-    conditions: list = [Source.source_id == source_id]
-    only_active: bool = not include_inactive
-    if only_active:
-        conditions.append(Source.is_active.is_(True))
+    conditions: list[Any] = [
+        Source.source_id == source_id,
+        *_active_source_filters(include_inactive),
+    ]
 
-    source_stmt = select(Source).where(and_(*conditions))
+    source_stmt = (
+        select(Source)
+        .where(and_(*conditions))
+    )
     if include_devices:
         source_stmt = source_stmt.options(selectinload(Source.iot_devices))
 
     source: Source | None = await db.scalar(source_stmt)
-    if source is None:
+    is_not_found: bool = source is None
+    if is_not_found:
         raise SourceNotFoundError(f"Source {source_id} not found.")
 
     await ensure_user_source_permission(
         db,
         user_id=actor_id,
         source_id=source_id,
+        allowed_source_roles=allowed_source_roles,
     )
 
     return source
@@ -226,14 +282,15 @@ async def get_source_by_qr_code(
     include_inactive: bool = False,
 ) -> Source:
     """
-    Quickly looks up a station by its QR code (intended for the field service engineer mobile app),
-    preloading attached ESP32 IoT devices. Excludes soft-deleted (`is_active=False`) sources by default.
+    Quickly looks up a station by its QR code (intended for the field service
+    engineer mobile app), preloading attached ESP32 IoT devices.
+    Excludes soft-deleted (`is_active=False`) sources by default.
     """
     cleaned_qr: str = qr_code.strip()
-    conditions: list = [Source.qr_code == cleaned_qr]
-    only_active: bool = not include_inactive
-    if only_active:
-        conditions.append(Source.is_active.is_(True))
+    conditions: list[Any] = [
+        Source.qr_code == cleaned_qr,
+        *_active_source_filters(include_inactive),
+    ]
 
     source_stmt = (
         select(Source)
@@ -241,7 +298,8 @@ async def get_source_by_qr_code(
         .options(selectinload(Source.iot_devices))
     )
     source: Source | None = await db.scalar(source_stmt)
-    if source is None:
+    is_not_found: bool = source is None
+    if is_not_found:
         raise SourceNotFoundError(
             f"Source with QR code '{cleaned_qr}' not found."
         )
@@ -249,7 +307,7 @@ async def get_source_by_qr_code(
     await ensure_user_source_permission(
         db,
         user_id=actor_id,
-        source_id=source.source_id,
+        source_id=cast(UUID, source.source_id),
     )
 
     return source
@@ -272,11 +330,7 @@ async def get_sources(
     to only those sources accessible via `user_source_access`.
     Soft-deleted (`is_active=False`) sources are excluded unless `include_inactive=True`.
     """
-    filters: list[Any] = []
-
-    only_active: bool = not include_inactive
-    if only_active:
-        filters.append(Source.is_active.is_(True))
+    filters: list[Any] = _active_source_filters(include_inactive)
 
     is_system_admin: bool = await _user_has_system_role(db, actor_id)
     if not is_system_admin:
@@ -288,9 +342,10 @@ async def get_sources(
         )
         filters.append(user_access_exists)
 
-    has_search_query: bool = bool(search and search.strip())
+    cleaned_search: str = search.strip() if search is not None else ""
+    has_search_query: bool = bool(cleaned_search)
     if has_search_query:
-        escaped: str = f"%{escape_like(search.strip())}%"  # type: ignore[union-attr]
+        escaped: str = f"%{escape_like(cleaned_search)}%"
         search_condition = or_(
             Source.source_name.ilike(escaped, escape="\\"),
             Source.source_address.ilike(escaped, escape="\\"),
@@ -302,7 +357,10 @@ async def get_sources(
     if has_status_filter:
         filters.append(Source.source_status == source_status)
 
-    count_stmt = select(func.count(Source.source_id)).where(*filters)
+    count_stmt = (
+        select(func.count(Source.source_id))
+        .where(*filters)
+    )
     raw_total = await db.scalar(count_stmt)
     total: int = int(raw_total or 0)
     if total == 0:
@@ -339,7 +397,7 @@ async def get_user_accessible_sources(
     For ROOT/ADMIN users, returns all system stations with the corresponding administrative role.
     Excludes soft-deleted (`is_active=False`) sources unless `include_inactive=True`.
     """
-    active_filter: list = [] if include_inactive else [Source.is_active.is_(True)]
+    active_filter: list[Any] = _active_source_filters(include_inactive)
     is_system_admin: bool = await _user_has_system_role(db, user_id)
 
     if is_system_admin:
@@ -398,6 +456,23 @@ async def get_user_accessible_sources(
     ]
 
 
+async def _apply_qr_update(
+    db: AsyncSession,
+    source: Source,
+    new_qr_code: str | None,
+) -> None:
+    if new_qr_code is None:
+        return
+
+    cleaned_qr: str = new_qr_code.strip()
+    is_unchanged: bool = cleaned_qr == source.qr_code
+    if is_unchanged:
+        return
+
+    await _validate_unique_qr_code(db, cleaned_qr, exclude_source_id=source.source_id)
+    source.qr_code = cleaned_qr
+
+
 async def update_source(
     db: AsyncSession,
     *,
@@ -425,10 +500,11 @@ async def update_source(
 
     _validate_coordinates(latitude, longitude)
 
-    conditions: list = [Source.source_id == source_id]
-    is_not_reactivating: bool = is_active is not True
-    if is_not_reactivating:
-        conditions.append(Source.is_active.is_(True))
+    is_reactivating: bool = is_active is True
+    conditions: list[Any] = [
+        Source.source_id == source_id,
+        *_active_source_filters(include_inactive=is_reactivating),
+    ]
 
     source_stmt = (
         select(Source)
@@ -439,36 +515,23 @@ async def update_source(
     if source is None:
         raise SourceNotFoundError(f"Source {source_id} not found.")
 
-    has_qr_update: bool = qr_code is not None
-    if has_qr_update:
-        cleaned_qr: str = qr_code.strip()  # type: ignore[union-attr]
-        is_qr_changed: bool = cleaned_qr != source.qr_code
-        if is_qr_changed:
-            qr_exists_stmt = select(
-                exists().where(
-                    and_(
-                        Source.qr_code == cleaned_qr,
-                        Source.source_id != source_id,
-                    )
-                )
-            )
-            qr_exists: bool | None = await db.scalar(qr_exists_stmt)
-            if qr_exists:
-                raise SourceQrCodeAlreadyExistsError(
-                    f"Energy source with QR code '{cleaned_qr}' already exists."
-                )
-            source.qr_code = cleaned_qr
+    await _apply_qr_update(db, source, qr_code)
 
     if source_name is not None:
         source.source_name = source_name.strip()
+
     if source_address is not None:
         source.source_address = source_address.strip() or None
+
     if latitude is not None:
         source.latitude = latitude
+
     if longitude is not None:
         source.longitude = longitude
+
     if source_status is not None:
         source.source_status = source_status
+
     if is_active is not None:
         source.is_active = is_active
 
@@ -501,7 +564,8 @@ async def deactivate_source(
 ) -> None:
     """
     Soft-deletes a generation source by setting `is_active` to False,
-    preserving its physical `source_status`, associated devices, telemetry, and historical sessions.
+    preserving its physical `source_status`, associated devices, telemetry,
+    and historical sessions.
     """
     await ensure_user_source_permission(
         db,

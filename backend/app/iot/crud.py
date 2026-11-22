@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
@@ -11,28 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.core.enums import RoleName
+from app.core.utils import normalise_mac_address
+
 from app.iot.exceptions import *
 from app.iot.models import IoTDevice
 from app.sources.crud import ensure_user_source_permission
 from app.sources.exceptions import SourceNotFoundError
 from app.sources.models import Source
-
-_MAC_REGEX: re.Pattern[str] = re.compile(r"^([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})$")
-
-
-def normalise_mac_address(mac: str) -> str:
-    """
-    Validates the MAC address format and normalizes it to lowercase
-    with colons (standard storage format for the MACADDR type in Postgres).
-    """
-    cleaned: str = mac.strip()
-    is_valid_mac: bool = bool(_MAC_REGEX.match(cleaned))
-    if not is_valid_mac:
-        raise InvalidMacAddressError(
-            f"Invalid MAC address format: '{mac}'. "
-            f"Expected XX:XX:XX:XX:XX:XX."
-        )
-    return cleaned.replace("-", ":").lower()
 
 
 async def create_iot_device(
