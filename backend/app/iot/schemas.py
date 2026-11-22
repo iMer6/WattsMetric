@@ -2,10 +2,10 @@ from datetime import datetime
 from typing import Any, Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, AfterValidator
+from pydantic import Field, AfterValidator
 
 from app.core.utils import normalise_mac_address
-
+from app.core.schemas import ORMBaseModel, TrimmedBaseModel
 
 MacAddress: type[str] = Annotated[
     str,
@@ -20,9 +20,7 @@ MacAddress: type[str] = Annotated[
 ]
 
 
-class IoTDeviceBase(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class IoTDeviceBase(TrimmedBaseModel):
     firmware_version: str = Field(
         ...,
         min_length=1,
@@ -56,9 +54,7 @@ class IoTDeviceCreateRequest(IoTDeviceBase):
     )
 
 
-class IoTDeviceUpdateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class IoTDeviceUpdateRequest(TrimmedBaseModel):
     firmware_version: str | None = Field(
         default=None,
         min_length=1,
@@ -76,9 +72,7 @@ class IoTDeviceUpdateRequest(BaseModel):
     )
 
 
-class IoTDeviceOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class IoTDeviceOut(ORMBaseModel):
     iot_id: UUID = Field(
         ..., description="Unique UUID of the IoT device."
     )

@@ -1,20 +1,14 @@
 from datetime import datetime
-from typing import TypeVar, Annotated
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    AfterValidator
-)
+from pydantic import Field, AfterValidator
 
 from app.core.utils import ensure_utc_datetime
+from app.core.schemas import ORMBaseModel, TrimmedBaseModel
 
 from app.users.schemas import UserShortOut
 
-
-T: TypeVar = TypeVar("T")
 
 UtcDatetime: type[datetime] = Annotated[
     datetime,
@@ -22,9 +16,7 @@ UtcDatetime: type[datetime] = Annotated[
 ]
 
 
-class MaintenancePhotoOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class MaintenancePhotoOut(ORMBaseModel):
     photo_id: UUID = Field(
         ...,
         description="Unique UUID of the maintenance photo."
@@ -52,9 +44,7 @@ class MaintenancePhotoOut(BaseModel):
     )
 
 
-class MaintenanceSessionCreateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class MaintenanceSessionCreateRequest(TrimmedBaseModel):
     session_id: UUID | None = Field(
         default=None,
         description=(
@@ -91,9 +81,7 @@ class MaintenanceSessionCreateRequest(BaseModel):
     )
 
 
-class MaintenanceSessionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class MaintenanceSessionOut(ORMBaseModel):
     session_id: UUID = Field(
         ...,
         description="Unique UUID of the maintenance session."

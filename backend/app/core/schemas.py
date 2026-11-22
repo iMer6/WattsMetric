@@ -5,6 +5,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from app.core.utils import ensure_utc_datetime
 
+
 T: TypeVar = TypeVar("T")
 
 type UtcDatetime = Annotated[
@@ -17,7 +18,6 @@ class ORMBaseModel(BaseModel):
     """
     Base schema for response models mapped from SQLAlchemy ORM Objects.
     """
-    
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -25,15 +25,13 @@ class TrimmedBaseModel(BaseModel):
     """
     Base schema for incoming payloads with automatic whitespace stripping.
     """
-    
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 class PaginatedResponse[T](BaseModel):
     """
     Standard paginated response wrapper matching `X-Total-Count` header.
     """
-    
     items: list[T] = Field(..., description="Page items.")
     total: int = Field(
         ..., ge=0,

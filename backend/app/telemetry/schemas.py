@@ -1,19 +1,13 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, TypeVar, Annotated
+from typing import Any, Annotated
 from uuid import UUID
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    model_validator,
-    AfterValidator,
-)
+from pydantic import BaseModel, Field, model_validator, AfterValidator
 
 from app.core.utils import ensure_utc_datetime
+from app.core.schemas import ORMBaseModel, TrimmedBaseModel
 
-T: TypeVar = TypeVar("T")
 
 MAX_TELEMETRY_BATCH_SIZE: int = 1000
 
@@ -86,7 +80,6 @@ class MeasurementBatchIngestRequest(BaseModel):
     """
     Batch payload uploaded from ESP32 FIFO flash buffer (up to 1000 samples).
     """
-
     measurements: list[MeasurementCreateItem] = Field(
         ...,
         min_length=1,
@@ -124,9 +117,7 @@ class MeasurementBatchIngestResponse(BaseModel):
     )
 
 
-class MeasurementOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class MeasurementOut(ORMBaseModel):
     iot_id: UUID = Field(
         ..., description="Source IoT device UUID."
     )
@@ -161,9 +152,7 @@ class MeasurementOut(BaseModel):
 # Time Aggregates
 
 
-class TimeAggregateOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class TimeAggregateOut(ORMBaseModel):
     iot_id: UUID = Field(
         ...,
         description="IoT device UUID for which the bucket is aggregated."
@@ -204,9 +193,7 @@ class TimeAggregateOut(BaseModel):
 # Test Profiles
 
 
-class TestProfileCreateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class TestProfileCreateRequest(TrimmedBaseModel):
     test_profile_name: str = Field(
         ...,
         min_length=2,
@@ -246,13 +233,10 @@ class TestProfileCreateRequest(BaseModel):
         return self
 
 
-class TestProfileShortOut(BaseModel):
+class TestProfileShortOut(ORMBaseModel):
     """
     Lightweight projection of a test profile for paginated listing.
     """
-
-    model_config = ConfigDict(from_attributes=True)
-
     test_profile_id: UUID = Field(
         ..., description="Unique UUID of the test profile."
     )
@@ -268,7 +252,6 @@ class TestProfileDetailOut(TestProfileShortOut):
     """
     Full test profile including JSONB `profile_payload` for replay execution.
     """
-
     profile_payload: dict[str, Any] = Field(
         ...,
         description=(

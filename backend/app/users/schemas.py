@@ -3,15 +3,12 @@ from typing import Annotated
 from uuid import UUID
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
-    EmailStr,
-    Field,
-    AfterValidator,
+    BaseModel, EmailStr, Field, AfterValidator,
 )
 
 from app.core.enums import RoleName
 from app.core.utils import validate_strong_password
+from app.core.schemas import ORMBaseModel, TrimmedBaseModel
 
 
 type StrongPassword = Annotated[
@@ -36,9 +33,7 @@ class TokenResponse(BaseModel):
 # Roles
 
 
-class RoleOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class RoleOut(ORMBaseModel):
     role_id: int
     role_name: str
     description: str | None = None
@@ -51,9 +46,7 @@ class UserRoleAssignRequest(BaseModel):
 # Users
 
 
-class UserBase(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class UserBase(TrimmedBaseModel):
     user_name: str = Field(..., min_length=2, max_length=100)
     user_email: EmailStr = Field(..., max_length=255)
 
@@ -77,23 +70,23 @@ class UserAdminCreateRequest(UserBase):
     )
 
 
-class UserUpdateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class UserUpdateRequest(TrimmedBaseModel):
     user_name: str | None = Field(
         default=None, min_length=2, max_length=100
     )
-    user_email: EmailStr | None = Field(default=None, max_length=255)
+    user_email: EmailStr | None = Field(
+        default=None, max_length=255
+    )
 
 
 class PasswordChangeRequest(BaseModel):
-    current_password: str = Field(..., min_length=1, max_length=72)
+    current_password: str = Field(
+        ..., min_length=1, max_length=72
+    )
     new_password: StrongPassword
 
 
-class UserShortOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class UserShortOut(ORMBaseModel):
     user_id: UUID
     user_name: str
     user_email: EmailStr
@@ -105,19 +98,19 @@ class UserOut(UserShortOut):
     roles: list[RoleOut] = Field(default_factory=list)
 
 
-class UserSourceAccessBriefOut(BaseModel):
+class UserSourceAccessBriefOut(ORMBaseModel):
     """
     User access to generation objects (for a user profile).
     """
-    model_config = ConfigDict(from_attributes=True)
-
     access_id: int
     source_id: UUID
     role: RoleOut
 
 
 class UserDetailOut(UserOut):
-    source_accesses: list[UserSourceAccessBriefOut] = Field(default_factory=list)
+    source_accesses: list[UserSourceAccessBriefOut] = Field(
+        default_factory=list
+    )
 
 
 class PaginatedUsersResponse(BaseModel):
@@ -139,13 +132,11 @@ class SourceAccessUpdateRequest(BaseModel):
     role_id: int = Field(..., gt=0)
 
 
-class UserSourceAccessOut(BaseModel):
+class UserSourceAccessOut(ORMBaseModel):
     """
     Full access record for a generation facility
     (for the list of the facility's participants).
     """
-    model_config = ConfigDict(from_attributes=True)
-
     access_id: int
     user_id: UUID
     source_id: UUID

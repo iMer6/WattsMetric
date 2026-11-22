@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import TypeVar, Annotated
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, AfterValidator
+from pydantic import Field, AfterValidator
 
 from app.core.enums import SourceStatus
 from app.core.utils import validate_lat, validate_lon
+from app.core.schemas import ORMBaseModel, TrimmedBaseModel
 
 from app.iot.schemas import IoTDeviceOut
 
-T: TypeVar = TypeVar("T")
 
 type Latitude = Annotated[
     Decimal,
@@ -41,9 +41,7 @@ type Longitude = Annotated[
 ]
 
 
-class SourceCreateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class SourceCreateRequest(TrimmedBaseModel):
     source_name: str = Field(
         ...,
         min_length=2,
@@ -81,9 +79,7 @@ class SourceCreateRequest(BaseModel):
     )
 
 
-class SourceUpdateRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
+class SourceUpdateRequest(TrimmedBaseModel):
     source_name: str | None = Field(
         default=None,
         min_length=2,
@@ -112,13 +108,10 @@ class SourceUpdateRequest(BaseModel):
     )
 
 
-class SourceShortOut(BaseModel):
+class SourceShortOut(ORMBaseModel):
     """
     Lightweight projection of an energy source for paginated list views.
     """
-
-    model_config = ConfigDict(from_attributes=True)
-
     source_id: UUID = Field(
         ..., description="Unique UUID of the energy source."
     )
@@ -152,7 +145,6 @@ class SourceDetailOut(SourceShortOut):
     """
     Detailed energy source representation including attached ESP32 IoT devices.
     """
-
     iot_devices: list[IoTDeviceOut] = Field(
         default_factory=list,
         description="List of IoT microcontrollers commissioned on this source.",
