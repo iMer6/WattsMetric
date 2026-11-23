@@ -210,3 +210,145 @@ async def test_maintenance_offline_sync_and_photo_upload(
         },
     )
     assert good_photo.status_code == 201
+
+
+async def test_profiles_aggregates_and_maintenance_inspectors(
+    client: AsyncClient,
+    make_user_headers,
+):
+    """
+    Test profiles, time-based aggregates, list of technical inspection sessions,
+    and inspector assignments.
+    """
+    owner_headers: dict[str, str] = await make_user_headers(
+        "analyt_owner@wattsmetric.ua", RoleName.OWNER
+    )
+    eng1_headers: dict[str, str] = await make_user_headers(
+        "eng1@wattsmetric.ua", RoleName.ENGINEER
+    )
+    eng2_headers: dict[str, str] = await make_user_headers(
+        "eng2@wattsmetric.ua", RoleName.ENGINEER
+    )
+
+    eng1_id = (
+        await client.get(
+            "/api/v1/users/me",
+            headers=eng1_headers
+        )
+    ).json()["user_id"]
+    eng2_id = (
+        await client.get(
+            "/api/v1/users/me",
+            headers=eng2_headers
+        )
+    ).json()["user_id"]
+    roles = (
+        await client.get(
+            "/api/v1/users/roles",
+            headers=owner_headers
+        )
+    ).json()
+    eng_role_id = next(
+        role["role_id"]
+        for role in roles
+        if role["role_name"] == RoleName.ENGINEER.value
+    )
+
+    # Test profiles: POST ==> GET list ==> GET detail
+    prof_resp: Response = await client.post(
+        "/api/v1/telemetry/test-profiles",
+        headers=owner_headers,
+        json={
+            "test_profile_name": "Summer peak for SPP 2026",
+            "profile_payload": {
+                "points": [{"t": 0, "v": 230.0, "i": 12.0}]
+            },
+        },
+    )
+    assert prof_resp.status_code == 201
+    profile_id = prof_resp.json()["test_profile_id"]
+
+    prof_list: Response = await client.get(
+        "/api/v1/telemetry/test-profiles",
+        headers=owner_headers,
+        params={"search": "Summer"},
+    )
+    assert prof_list.status_code == 200
+    assert prof_list.json()["total"] >= 1
+
+    prof_detail = await client.get(
+        f"/api/v1/telemetry/test-profiles/{profile_id}",
+        headers=owner_headers,
+    )
+    assert prof_detail.status_code == 200
+    assert "points" in prof_detail.json()["profile_payload"]
+
+    # Creating a source and checking GET /aggregates
+    source_id = (
+        await client.post(
+            "/api/v1/sources",
+            headers=owner_headers,
+            json={
+                "source_name": "SPP Analytics",
+                "qr_code": "QR-ANL-01",
+                "source_status": "active"
+            },
+        )
+    ).json()["source_id"]
+
+    t0: datetime = datetime(
+        2026, 11, 23, 0, 0,
+        tzinfo=timezone.utc
+    )
+    agg_resp: Response = await client.get(
+        f"/api/v1/telemetry/{source_id}/aggregates",
+        headers=owner_headers,
+        params={
+            "date_from": t0.isoformat(),
+            "date_to": (t0 + timedelta(days=7)).isoformat(),
+        },
+    )
+    assert agg_resp.status_code == 200
+    assert "items" in agg_resp.json()
+
+    # Assign two engineers to the station,
+    # create a maintenance session,
+    # assign a second inspector, and read the list.
+    for uid in (eng1_id, eng2_id):
+        await client.post(
+            f"/api/v1/users/sources/{source_id}/accesses",
+            headers=owner_headers,
+            json={
+                "user_id": uid,
+                "role_id": eng_role_id
+            },
+        )
+
+    session_id: str = str(uuid4())
+    await client.post(
+        f"/api/v1/maintenance/{source_id}/maintenance-sessions",
+        headers=eng1_headers,
+        json={
+            "session_id": session_id,
+            "inspector_notes": "Scheduled maintenance of the inverter group.",
+            "created_at": t0.isoformat(),
+            "inspector_ids": [eng1_id],
+        },
+    )
+
+    # POST /users/maintenance-sessions/{session_id}/inspectors
+    assign_resp: Response = await client.post(
+        f"/api/v1/users/maintenance-sessions/{session_id}/inspectors",
+        headers=owner_headers,
+        json={"inspector_id": eng2_id},
+    )
+    assert assign_resp.status_code == 204
+
+    # GET /maintenance/{source_id}/maintenance-sessions
+    sessions_list: Response = await client.get(
+        f"/api/v1/maintenance/{source_id}/maintenance-sessions",
+        headers=owner_headers,
+    )
+    assert sessions_list.status_code == 200
+    assert sessions_list.json()["total"] == 1
+    assert len(sessions_list.json()["items"][0]["inspectors"]) == 2

@@ -139,3 +139,146 @@ async def test_iot_devices_mac_uniqueness_and_isolation(
         headers=owner_headers,
     )
     assert wrong_source_resp.status_code == 404
+
+
+async def test_source_update_access_management_and_iot_crud(
+    client: AsyncClient,
+    make_user_headers,
+):
+    """
+    Source updates, site access rights management, and CRUD for ESP32.
+    """
+    owner_headers: dict[str, str] = await make_user_headers(
+        "full_owner@wattsmetric.ua", RoleName.OWNER
+    )
+    staff_headers: dict[str, str] = await make_user_headers(
+        "staff_user@wattsmetric.ua", RoleName.ENGINEER
+    )
+
+    staff_id = (
+        await client.get(
+            "/api/v1/users/me",
+            headers=staff_headers
+        )
+    ).json()["user_id"]
+    roles = (
+        await client.get(
+            "/api/v1/users/roles",
+            headers=owner_headers
+        )
+    ).json()
+    roles_map = {
+        role["role_name"]: role["role_id"] for role in roles
+    }
+
+    # Creating a source
+    source_id = (
+        await client.post(
+            "/api/v1/sources",
+            headers=owner_headers,
+            json={
+                "source_name": "WPP Steppe",
+                "qr_code": "WM-WIND-01",
+                "source_status": "active"
+            },
+        )
+    ).json()["source_id"]
+
+    # GET /sources/{source_id} and PATCH /sources/{source_id}
+    get_src: Response = await client.get(
+        f"/api/v1/sources/{source_id}",
+        headers=owner_headers
+    )
+    assert get_src.status_code == 200
+
+    patch_src: Response = await client.patch(
+        f"/api/v1/sources/{source_id}",
+        headers=owner_headers,
+        json={
+            "source_name": "WPP Steppe modern",
+            "source_status": "maintenance"
+        },
+    )
+    assert patch_src.status_code == 200
+    assert patch_src.json()["source_name"] == "WPP Steppe modern"
+    assert patch_src.json()["source_status"] == "maintenance"
+
+    # Object access: POST ==> GET ==> PATCH ==> DELETE
+    grant: Response = await client.post(
+        f"/api/v1/users/sources/{source_id}/accesses",
+        headers=owner_headers,
+        json={
+            "user_id": staff_id,
+            "role_id": roles_map[RoleName.ENGINEER.value]
+        },
+    )
+    assert grant.status_code == 201
+
+    access_list: Response = await client.get(
+        f"/api/v1/users/sources/{source_id}/accesses",
+        headers=owner_headers,
+    )
+    assert access_list.status_code == 200
+    assert len(access_list.json()) >= 2  # OWNER + ENGINEER
+
+    upd_access: Response = await client.patch(
+        f"/api/v1/users/sources/{source_id}/accesses/{staff_id}",
+        headers=owner_headers,
+        json={
+            "role_id": roles_map[RoleName.DISPATCHER.value]
+        },
+    )
+    assert upd_access.status_code == 200
+
+    # Full CRUD for ESP32: POST ==> GET list ==> GET detail ==> PATCH ==> DELETE
+    iot_id = (
+        await client.post(
+            f"/api/v1/iot/{source_id}/devices",
+            headers=owner_headers,
+            json={
+                "esp32_mac": "AA:BB:CC:DD:EE:01",
+                "firmware_version": "1.0.0",
+                "sensor_config": {"gain": 1},
+                "is_active": True,
+            },
+        )
+    ).json()["iot_id"]
+
+    dev_list: Response = await client.get(
+        f"/api/v1/iot/{source_id}/devices",
+        headers=owner_headers
+    )
+    assert dev_list.status_code == 200
+    assert len(dev_list.json()) == 1
+
+    dev_detail: Response = await client.get(
+        f"/api/v1/iot/{source_id}/devices/{iot_id}",
+        headers=owner_headers,
+    )
+    assert dev_detail.status_code == 200
+    assert dev_detail.json()["esp32_mac"] == "aa:bb:cc:dd:ee:01"
+
+    dev_patch: Response = await client.patch(
+        f"/api/v1/iot/{source_id}/devices/{iot_id}",
+        headers=owner_headers,
+        json={
+            "firmware_version": "1.2.5",
+            "sensor_config": {"gain": 2}
+        },
+    )
+    assert dev_patch.status_code == 200
+    assert dev_patch.json()["firmware_version"] == "1.2.5"
+
+    dev_del: Response = await client.delete(
+        f"/api/v1/iot/{source_id}/devices/{iot_id}",
+        headers=owner_headers,
+    )
+    assert dev_del.status_code == 204
+
+    # Revoking an employee's access
+    # (DELETE /users/sources/{source_id}/accesses/{user_id})
+    revoke: Response = await client.delete(
+        f"/api/v1/users/sources/{source_id}/accesses/{staff_id}",
+        headers=owner_headers,
+    )
+    assert revoke.status_code == 204
