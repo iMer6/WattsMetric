@@ -69,7 +69,7 @@ class Measurement(Base):
     iot_device: Mapped["IoTDevice"] = relationship(
         "IoTDevice",
         back_populates="measurements",
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (
@@ -129,7 +129,7 @@ class TimeAggregate(Base):
     iot_device: Mapped["IoTDevice"] = relationship(
         "IoTDevice",
         back_populates="time_aggregates",
-        lazy="noload",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:

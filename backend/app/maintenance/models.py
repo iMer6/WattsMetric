@@ -75,31 +75,31 @@ class MaintenanceSession(Base):
     source: Mapped["Source"] = relationship(
         "Source",
         back_populates="maintenance_sessions",
-        lazy="noload",
+        lazy="raise",
     )
     deleted_by_user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[deleted_by],
-        lazy="noload",
+        lazy="raise",
     )
     inspectors: Mapped[list["User"]] = relationship(
         "User",
         secondary="maintenance_inspectors",
-        backref=backref("inspected_sessions", lazy="noload"),
-        lazy="noload",
+        backref=backref("inspected_sessions", lazy="raise"),
+        lazy="raise",
     )
     session_inspectors: Mapped[list["MaintenanceInspector"]] = relationship(
         "MaintenanceInspector",
         back_populates="session",
         cascade="all, delete-orphan",
         overlaps="inspectors,inspected_sessions",
-        lazy="noload",
+        lazy="raise",
     )
     photos: Mapped[list["MaintenancePhoto"]] = relationship(
         "MaintenancePhoto",
         back_populates="session",
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (
@@ -155,12 +155,12 @@ class MaintenanceInspector(Base):
         "MaintenanceSession",
         back_populates="session_inspectors",
         overlaps="inspectors,inspected_sessions",
-        lazy="noload",
+        lazy="raise",
     )
     inspector: Mapped["User"] = relationship(
         "User",
         overlaps="inspectors,inspected_sessions",
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (
@@ -218,12 +218,12 @@ class MaintenancePhoto(Base):
     session: Mapped["MaintenanceSession"] = relationship(
         "MaintenanceSession",
         back_populates="photos",
-        lazy="noload",
+        lazy="raise",
     )
     deleted_by_user: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[deleted_by],
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (

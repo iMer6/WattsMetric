@@ -73,21 +73,21 @@ class IoTDevice(Base):
     source: Mapped["Source"] = relationship(
         "Source",
         back_populates="iot_devices",
-        lazy="noload",
+        lazy="raise",
     )
     measurements: Mapped[list["Measurement"]] = relationship(
         "Measurement",
         back_populates="iot_device",
         cascade="all, delete-orphan",
         passive_deletes=True,
-        lazy="noload",
+        lazy="raise",
     )
     time_aggregates: Mapped[list["TimeAggregate"]] = relationship(
         "TimeAggregate",
         back_populates="iot_device",
         cascade="all, delete-orphan",
         passive_deletes=True,
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (

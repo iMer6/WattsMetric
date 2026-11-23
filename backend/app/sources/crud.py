@@ -24,7 +24,8 @@ from app.sources.exceptions import (
 )
 from app.sources.models import Source
 
-from app.users.models import Role, User, UserRole, UserSourceAccess
+from app.users.crud import user_has_system_role
+from app.users.models import Role, User, UserSourceAccess
 
 SYSTEM_ROLE_NAMES: frozenset[str] = frozenset({
     RoleName.ROOT.value,
@@ -75,23 +76,6 @@ def _active_source_filters(include_inactive: bool) -> list[Any]:
     return []
 
 
-async def _user_has_system_role(
-    db: AsyncSession,
-    user_id: UUID,
-) -> bool:
-    role_exists_stmt = select(
-        exists().where(
-            and_(
-                UserRole.user_id == user_id,
-                UserRole.role_id == Role.role_id,
-                Role.role_name.in_(SYSTEM_ROLE_NAMES),
-            )
-        )
-    )
-    has_system_role: bool | None = await db.scalar(role_exists_stmt)
-    return bool(has_system_role)
-
-
 async def ensure_user_source_permission(
     db: AsyncSession,
     *,
@@ -105,29 +89,38 @@ async def ensure_user_source_permission(
     Users with global ROOT or ADMIN roles are granted full access.
     If `allowed_source_roles` is not specified, any valid record in `user_source_access` suffices.
     """
-    is_system_admin: bool = await _user_has_system_role(db, user_id)
+    is_system_admin: bool = await user_has_system_role(db, user_id)
     if is_system_admin:
         return
 
-    conditions: list[Any] = [
-        UserSourceAccess.user_id == user_id,
-        UserSourceAccess.source_id == source_id,
-        User.user_id == user_id,
-        User.is_active.is_(True),
-    ]
-    has_role_restrictions: bool = bool(allowed_source_roles)
-    if has_role_restrictions:
-        conditions.extend([
-            UserSourceAccess.role_id == Role.role_id,
-            Role.role_name.in_(tuple(allowed_source_roles)),
-        ])
-
-    access_stmt = select(
-        exists().where(and_(*conditions))
+    stmt = (
+        select(1)
+        .select_from(UserSourceAccess)
+        .join(
+            User,
+            User.user_id == UserSourceAccess.user_id,
+        )
+        .where(
+            UserSourceAccess.user_id == user_id,
+            UserSourceAccess.source_id == source_id,
+            User.is_active.is_(True),
+        )
     )
-    has_access: bool | None = await db.scalar(access_stmt)
-    is_access_denied: bool = not has_access
-    if is_access_denied:
+
+    if allowed_source_roles:
+        stmt = (
+            stmt
+            .join(
+                Role,
+                Role.role_id == UserSourceAccess.role_id,
+            )
+            .where(
+                Role.role_name.in_(tuple(allowed_source_roles)),
+            )
+        )
+    
+    has_access: bool | None = await db.scalar(select(exists(stmt)))
+    if not has_access:
         raise SourceAccessDeniedError(
             f"User {user_id} is not authorized for source {source_id}."
         )
@@ -332,7 +325,7 @@ async def get_sources(
     """
     filters: list[Any] = _active_source_filters(include_inactive)
 
-    is_system_admin: bool = await _user_has_system_role(db, actor_id)
+    is_system_admin: bool = await user_has_system_role(db, actor_id)
     if not is_system_admin:
         user_access_exists = exists().where(
             and_(
@@ -398,7 +391,7 @@ async def get_user_accessible_sources(
     Excludes soft-deleted (`is_active=False`) sources unless `include_inactive=True`.
     """
     active_filter: list[Any] = _active_source_filters(include_inactive)
-    is_system_admin: bool = await _user_has_system_role(db, user_id)
+    is_system_admin: bool = await user_has_system_role(db, user_id)
 
     if is_system_admin:
         all_sources_stmt = (

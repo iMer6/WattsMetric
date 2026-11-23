@@ -9,3 +9,9 @@ backend/.env
 .vscode/
 
 .env
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+test_uploads

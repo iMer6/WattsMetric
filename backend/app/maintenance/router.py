@@ -125,7 +125,7 @@ async def create_maintenance_session(
         "- **Allowed Roles:** `ENGINEER` assigned to this facility (or global `ROOT`/`ADMIN`)."
     ),
     responses={
-        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE: {
+        status.HTTP_413_CONTENT_TOO_LARGE: {
             "description": "Payload Too Large — uploaded photo exceeds the max allowed size.",
         },
     },

@@ -69,13 +69,13 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
         overlaps="roles",
-        lazy="noload",
+        lazy="raise",
     )
     source_accesses: Mapped[list["UserSourceAccess"]] = relationship(
         "UserSourceAccess",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise",
     )
     
     @property
@@ -128,12 +128,12 @@ class Role(Base):
         secondary="user_roles",
         back_populates="roles",
         overlaps="user_roles",
-        lazy="noload",
+        lazy="raise",
     )
     source_accesses: Mapped[list["UserSourceAccess"]] = relationship(
         "UserSourceAccess",
         back_populates="role",
-        lazy="noload",
+        lazy="raise",
     )
 
 
@@ -163,7 +163,7 @@ class UserRole(Base):
         "User",
         back_populates="user_roles",
         overlaps="roles,users",
-        lazy="noload",
+        lazy="raise",
     )
     role: Mapped["Role"] = relationship(
         "Role",

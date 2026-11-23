@@ -86,19 +86,19 @@ class Source(Base):
         "IoTDevice",
         back_populates="source",
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise",
     )
     maintenance_sessions: Mapped[list["MaintenanceSession"]] = relationship(
         "MaintenanceSession",
         back_populates="source",
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise",
     )
     user_accesses: Mapped[list["UserSourceAccess"]] = relationship(
         "UserSourceAccess",
-        backref=backref("source", lazy="noload"),
+        backref=backref("source", lazy="raise"),
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise",
     )
 
     __table_args__ = (

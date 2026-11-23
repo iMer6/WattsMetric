@@ -57,23 +57,26 @@ async def _ensure_source_exists(
         raise SourceNotFoundError(f"Source {source_id} not found")
 
 
-async def _user_has_system_role(
+async def user_has_system_role(
     db: AsyncSession,
     user_id: UUID,
 ) -> bool:
-    user_has_system_role_stmt = select(
-        exists().where(
-            and_(
-                UserRole.user_id == user_id,
-                UserRole.role_id == Role.role_id,
-                Role.role_name.in_(SYSTEM_ROLE_NAMES),
-            )
+    has_system_role_stmt = (
+        select(1)
+        .select_from(UserRole)
+        .join(
+            Role,
+            Role.role_id == UserRole.role_id,
+        )
+        .where(
+            UserRole.user_id == user_id,
+            Role.role_name.in_(SYSTEM_ROLE_NAMES),
         )
     )
-    user_has_system_role: bool | None = (
-        await db.scalar(user_has_system_role_stmt)
+    has_system_role: bool | None = (
+        await db.scalar(select(exists(has_system_role_stmt)))
     )
-    return bool(user_has_system_role)
+    return bool(has_system_role)
 
 
 def _ensure_valid_source_role(role: Role) -> None:
@@ -92,7 +95,7 @@ async def _ensure_admin_permission(
     db: AsyncSession,
     actor_id: UUID
 ) -> None:
-    is_user_admin: bool | None = await _user_has_system_role(
+    is_user_admin: bool | None = await user_has_system_role(
         db, actor_id
     )
     if not is_user_admin:
@@ -134,7 +137,7 @@ async def _ensure_source_owner_or_admin(
     actor_id: UUID,
     source_id: UUID
 ) -> None:
-    if await _user_has_system_role(db, actor_id):
+    if await user_has_system_role(db, actor_id):
         return
     
     is_owner_stmt = select(
@@ -354,7 +357,7 @@ async def ensure_can_view_source_accesses(
     """
     await _ensure_source_exists(db, source_id)
     
-    has_system_role: bool = await _user_has_system_role(db, actor_id)
+    has_system_role: bool = await user_has_system_role(db, actor_id)
     if has_system_role:
         return
     
